@@ -1,0 +1,23 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Packaging outputs
+build/
+dist/
+*.egg-info/
+ruyiPage.egg-info/
+pyproject.toml
+MANIFEST.in
+
+# Local tool cache
+.ruff_cache/
+.pytest_cache/
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
