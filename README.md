@@ -10,6 +10,9 @@
 > **不依赖 CDP、无 CDP 暴露面、针对性被检测更少。**  
 > **原生动作可实现大量 `isTrusted` 行为，内置拟人操作能力，专为高风控场景而生。**
 
+> 已支持接管已打开的 **Firefox 指纹浏览器**，包括 ADS / FlowerBrowser 这类会把调试端口改成随机值的场景。
+> 可通过自动探测端口直接接入已有实例，无需手工先找真实端口。
+
 [![PyPI version](https://img.shields.io/pypi/v/ruyiPage.svg)](https://pypi.org/project/ruyiPage/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/ruyiPage)](https://pypi.org/project/ruyiPage/)
 [![Last Commit](https://img.shields.io/github/last-commit/LoseNine/ruyipage)](https://github.com/LoseNine/ruyipage/commits/main)
@@ -112,6 +115,40 @@ page.get("https://www.example.com")
 print(page.title)
 page.quit()
 ```
+
+### 接管已打开的浏览器
+
+如果 Firefox 已经是你手动打开的，或者是指纹浏览器先打开的，也可以直接接管现有实例。
+
+这套方式适用于任意 **Firefox 内核指纹浏览器**，包括 ADS / FlowerBrowser 这类产品。
+如果浏览器允许固定启动参数，建议加入：
+
+```text
+--remote-debugging-port=9222
+```
+
+如果后台会把它改写成随机端口，也可以直接使用自动探测接管。
+
+```python
+from ruyipage import auto_attach_exist_browser
+
+page = auto_attach_exist_browser(
+    start_port=6000,
+    end_port=20000,
+    latest_tab=True,
+)
+
+print(page.browser.address)
+print(page.title)
+print(page.url)
+```
+
+适合这些情况：
+
+- 你想先手动打开 Firefox，再让 `ruyiPage` 接管
+- 你想先启动指纹浏览器，再从业务脚本里连进去
+- 你使用的是 ADS / FlowerBrowser，真实调试端口会随机变化
+- 你同机开了多个 Firefox，希望先扫描出哪些端口可接管
 
 ### 浏览器路径和 userdir 是什么
 
@@ -396,7 +433,40 @@ page.refresh()
 - 希望把指纹文件、语言、请求头、屏幕参数一起带上
 - 想直接验证 `browserscan` 等站点上的指纹表现
 
-### 4. HTTP 密码代理示例
+### 4. 接管已打开的 Firefox 指纹浏览器示例
+
+文件：`examples/39_attach_exist_browser.py`
+
+它会：
+
+- 提示你先手工启动 Firefox 或 Firefox 指纹浏览器
+- 优先扫描固定端口附近的可接管实例
+- 如果没有固定端口，再自动暴力扫描随机端口
+- 接管成功后直接操作当前浏览器实例
+
+核心写法：
+
+```python
+from ruyipage import auto_attach_exist_browser
+
+page = auto_attach_exist_browser(
+    start_port=6000,
+    end_port=20000,
+    latest_tab=True,
+)
+
+print(page.browser.address)
+print(page.title)
+print(page.url)
+```
+
+适用场景：
+
+- 已经打开了 ADS / FlowerBrowser 之类的 Firefox 指纹浏览器
+- 浏览器后台会把 `--remote-debugging-port=9222` 改成随机端口
+- 想直接自动探测真实端口并接管已有实例
+
+### 5. HTTP 密码代理示例
 
 如果你使用的是本项目自己的 Firefox 内核，那么内核已经支持从 `fpfile` 自动读取 HTTP 代理用户名密码。
 
@@ -432,6 +502,39 @@ page.get("http://ipinfo.io/json")
 - 你在自己的 Firefox 内核里已经实现了 `fpfile` 驱动的 HTTP 代理认证
 - 希望业务层只保留最小代理配置入口
 - 想让代理用户名密码完全留在 `fpfile` 中，而不是写进业务脚本
+
+### 6. 接管已打开浏览器示例
+
+文件：`examples/39_attach_exist_browser.py`
+
+它会：
+
+- 提示如何给指纹浏览器追加 `--remote-debugging-port`
+- 先扫描当前机器上可接管的 Firefox 实例
+- 固定端口找不到时自动暴力扫描随机端口
+- 再用 `ruyiPage` 接管已经打开的浏览器窗口
+
+核心写法：
+
+```python
+from ruyipage import auto_attach_exist_browser
+
+page = auto_attach_exist_browser(
+    start_port=6000,
+    end_port=20000,
+    latest_tab=True,
+)
+
+print(page.title)
+print(page.url)
+```
+
+适用场景：
+
+- 想先手工或外部程序启动 Firefox，再交给 `ruyiPage`
+- 想从多个可接管实例里先探测，再决定接哪一个
+- 想自动适配 ADS / FlowerBrowser 这类随机端口指纹浏览器
+- 想把“启动浏览器”和“业务自动化”拆成两段流程
 
 ---
 
@@ -1175,6 +1278,7 @@ page.extensions.uninstall(ext_id)
 - `34_remaining_commands.py`
 - `35_native_bidi_drag.py`
 - `36_native_bidi_select.py`
+- `39_attach_exist_browser.py` 自动探测可接管实例，再接管已打开的 Firefox/指纹浏览器
 
 ---
 

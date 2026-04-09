@@ -21,7 +21,7 @@ from .version import __version__
 from ._pages.firefox_page import FirefoxPage
 from ._pages.firefox_tab import FirefoxTab
 from ._pages.firefox_frame import FirefoxFrame
-from ._base.browser import Firefox
+from ._base.browser import Firefox, find_existing_browsers
 from ._configs.firefox_options import FirefoxOptions
 from ._elements.firefox_element import FirefoxElement
 from ._elements.none_element import NoneElement
@@ -124,6 +124,95 @@ def attach(address="127.0.0.1:9222"):
     return FirefoxPage(opts)
 
 
+def attach_exist_browser(address="127.0.0.1:9222", tab_index=1, latest_tab=False):
+    """接管一个已经启动的 Firefox 浏览器。
+
+    Args:
+        address: 调试地址，例如 127.0.0.1:9222
+        tab_index: 接管后默认切到第几个 tab，按 1 开始计数
+        latest_tab: True 时优先切到最新 tab，忽略 tab_index
+
+    Returns:
+        FirefoxPage
+    """
+    page = attach(address)
+    target_tab = None
+
+    if latest_tab:
+        target_tab = page.latest_tab
+    elif tab_index is not None:
+        target_tab = page.get_tab(tab_index)
+
+    if target_tab:
+        page.browser.activate_tab(target_tab)
+        page._context_id = target_tab.tab_id
+        page._driver = type(page._driver)(page.browser.driver, target_tab.tab_id)
+
+    return page
+
+
+def auto_attach_exist_browser(
+    address=None,
+    host="127.0.0.1",
+    start_port=9222,
+    end_port=65535,
+    timeout=0.2,
+    tab_index=1,
+    latest_tab=False,
+):
+    """自动接管一个已经启动的 Firefox 浏览器。
+
+    优先连接显式 address；若未提供或连接失败，则暴力扫描端口范围，
+    适合某些 Firefox 指纹浏览器把 ``--remote-debugging-port`` 改成随机端口的场景。
+
+    Args:
+        address: 已知调试地址，例如 127.0.0.1:9222。传入后先尝试直连。
+        host: 扫描主机，默认 127.0.0.1
+        start_port: 扫描起始端口
+        end_port: 扫描结束端口
+        timeout: 单端口探测超时（秒）
+        tab_index: 接管后默认切到第几个 tab，按 1 开始计数
+        latest_tab: True 时优先切到最新 tab，忽略 tab_index
+
+    Returns:
+        FirefoxPage
+    """
+    if address:
+        try:
+            return attach_exist_browser(
+                address=address,
+                tab_index=tab_index,
+                latest_tab=latest_tab,
+            )
+        except Exception:
+            pass
+
+    browsers = find_exist_browsers(
+        host=host,
+        start_port=start_port,
+        end_port=end_port,
+        timeout=timeout,
+    )
+    if not browsers:
+        raise RuntimeError(
+            "没有发现可接管的 Firefox 浏览器，请检查调试端口是否开启，"
+            "或扩大扫描端口范围。"
+        )
+
+    return attach_exist_browser(
+        address=browsers[0]["address"],
+        tab_index=tab_index,
+        latest_tab=latest_tab,
+    )
+
+
+def find_exist_browsers(host="127.0.0.1", start_port=9222, end_port=9322, timeout=0.5):
+    """发现当前机器上可接管的 Firefox 浏览器列表。"""
+    return find_existing_browsers(
+        host=host, start_port=start_port, end_port=end_port, timeout=timeout
+    )
+
+
 __all__ = [
     # 核心类
     "FirefoxPage",
@@ -169,6 +258,9 @@ __all__ = [
     # 便捷入口
     "launch",
     "attach",
+    "attach_exist_browser",
+    "auto_attach_exist_browser",
+    "find_exist_browsers",
     # 版本
     "__version__",
 ]
