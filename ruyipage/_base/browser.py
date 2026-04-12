@@ -151,6 +151,7 @@ def create_browser_from_probe_info(info):
     browser._quit_lock = threading.Lock()
     browser._proxy_auth_intercept_id = None
     browser._proxy_auth_subscription_id = None
+    browser._xpath_picker_last_reinject = {}
     browser._initialized = True
     return browser
 
@@ -439,6 +440,7 @@ class Firefox(object):
         self._quit_lock = threading.Lock()
         self._proxy_auth_intercept_id = None
         self._proxy_auth_subscription_id = None
+        self._xpath_picker_last_reinject = {}
 
         try:
             self._connect_or_launch()
@@ -1146,6 +1148,14 @@ class Firefox(object):
         self._driver.set_callback(
             "browsingContext.contextDestroyed", self._on_context_destroyed
         )
+        self._driver.set_callback(
+            "browsingContext.load", self._on_navigation_event, immediate=True
+        )
+        self._driver.set_callback(
+            "browsingContext.domContentLoaded",
+            self._on_navigation_event,
+            immediate=True,
+        )
 
     def _setup_download_behavior(self):
         """配置下载行为
@@ -1196,7 +1206,29 @@ class Firefox(object):
             if ctx_id in self._context_ids:
                 self._context_ids.remove(ctx_id)
                 self._contexts.pop(ctx_id, None)
+                self._xpath_picker_last_reinject.pop(ctx_id, None)
             logger.debug("标签页关闭: %s", ctx_id)
+
+    def _on_navigation_event(self, params):
+        """处理导航相关事件，自动收敛 XPath picker 注入。"""
+        if not getattr(self._options, "xpath_picker_enabled", False):
+            return
+
+        ctx_id = params.get("context", "")
+        if not ctx_id:
+            return
+
+        now = time.time()
+        last = self._xpath_picker_last_reinject.get(ctx_id, 0)
+        if now - last < 0.8:
+            return
+        self._xpath_picker_last_reinject[ctx_id] = now
+
+        try:
+            tab = self._get_or_create_tab(ctx_id)
+            tab._reinject_xpath_picker_if_needed()
+        except Exception as e:
+            logger.debug("导航事件 XPath picker reinject 失败: %s", e)
 
     def _get_or_create_tab(self, context_id):
         """获取或创建 FirefoxTab 实例"""
@@ -1211,6 +1243,11 @@ class Firefox(object):
         tab = FirefoxTab.__new__(FirefoxTab)
         tab._init_from_browser(self, context_id)
         self._contexts[context_id] = tab
+        try:
+            if getattr(self._options, "xpath_picker_enabled", False):
+                tab._reinject_xpath_picker_if_needed()
+        except Exception:
+            pass
         return tab
 
     def _find_free_port(self, start=None):

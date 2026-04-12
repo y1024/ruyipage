@@ -65,7 +65,6 @@ class FirefoxBase(BasePage):
         self._ready_state = None
         self._load_mode = "normal"
         self._ua_preload_script_id = None  # 用于 UA override 的 preload script ID
-        self._xpath_picker_preload_script_id = None
 
         # 惰性加载的 units
         self._scroll = None
@@ -117,10 +116,22 @@ class FirefoxBase(BasePage):
             return
 
         try:
-            if not self._xpath_picker_preload_script_id:
-                preload = self.add_preload_script(self._get_xpath_picker_script())
-                self._xpath_picker_preload_script_id = preload.id
-            self.run_js(self._get_xpath_picker_script(), as_expr=True)
+            if not getattr(
+                self._browser, "_xpath_picker_global_preload_script_id", None
+            ):
+                result = bidi_script.add_preload_script(
+                    self._driver._browser_driver,
+                    self._get_xpath_picker_script(),
+                )
+                self._browser._xpath_picker_global_preload_script_id = result.get(
+                    "script", ""
+                )
+            self.run_js(f"({self._get_xpath_picker_script()})()", as_expr=True)
+            self.run_js(
+                self._get_xpath_picker_frame_bridge_script(),
+                self._get_xpath_picker_script(),
+                as_expr=False,
+            )
         except Exception as e:
             logger.debug("XPath picker 注入失败: %s", e)
 
@@ -132,7 +143,7 @@ class FirefoxBase(BasePage):
 
         try:
             script_source = self._get_xpath_picker_script()
-            self.run_js(script_source, as_expr=True)
+            self.run_js(f"({script_source})()", as_expr=True)
             self.run_js(
                 self._get_xpath_picker_frame_bridge_script(),
                 script_source,
@@ -154,7 +165,7 @@ class FirefoxBase(BasePage):
             if (!targetWindow || !targetWindow.eval) {
                 return;
             }
-            targetWindow.eval(source);
+            targetWindow.eval(`(${source})()`);
         } catch (e) {
         }
     };
@@ -248,7 +259,7 @@ class FirefoxBase(BasePage):
     @staticmethod
     def _get_xpath_picker_script():
         return r"""
-(() => {
+() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') {
         return;
     }
@@ -273,6 +284,7 @@ class FirefoxBase(BasePage):
         hoverData: null,
         selectedData: null,
         panel: null,
+        watchdogBound: false,
     };
     topWindowRef.__ruyiXPathPicker__ = state;
 
@@ -281,6 +293,7 @@ class FirefoxBase(BasePage):
         selectedElement: null,
         highlight: null,
         handlersBound: false,
+        boundDocument: null,
         moveHandler: null,
         clickHandler: null,
         scrollHandler: null,
@@ -1273,9 +1286,21 @@ class FirefoxBase(BasePage):
     }
 
     function bindEvents() {
-        if (localState.handlersBound) {
+        if (localState.handlersBound && localState.boundDocument === document) {
             return;
         }
+
+        if (localState.handlersBound && localState.boundDocument && localState.moveHandler) {
+            try {
+                localState.boundDocument.removeEventListener('mousemove', localState.moveHandler, true);
+                localState.boundDocument.removeEventListener('click', localState.clickHandler, true);
+                window.removeEventListener('scroll', localState.scrollHandler, true);
+                window.removeEventListener('resize', localState.resizeHandler, true);
+            } catch (e) {
+            }
+            localState.handlersBound = false;
+        }
+
         localState.moveHandler = handleMove;
         localState.clickHandler = handleClick;
         localState.scrollHandler = handleViewportChange;
@@ -1285,6 +1310,58 @@ class FirefoxBase(BasePage):
         window.addEventListener('scroll', localState.scrollHandler, true);
         window.addEventListener('resize', localState.resizeHandler, true);
         localState.handlersBound = true;
+        localState.boundDocument = document;
+    }
+
+    function bindWatchdog() {
+        if (!isTopWindow || state.watchdogBound) {
+            return;
+        }
+
+        const restoreUI = () => {
+            try {
+                ensureStyles();
+                ensurePanel();
+                ensureHighlight();
+                syncTopUI();
+                if (typeof topWindowRef.__ruyiXPathPickerInjectIntoFrames === 'function') {
+                    topWindowRef.__ruyiXPathPickerInjectIntoFrames();
+                }
+            } catch (e) {
+            }
+        };
+
+        window.addEventListener('pageshow', restoreUI, true);
+        window.addEventListener('load', restoreUI, true);
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                restoreUI();
+            }
+        }, true);
+
+        const observer = new MutationObserver(() => {
+            const panelExists = !!document.getElementById(PANEL_ID);
+            const highlightExists = !!document.getElementById(HIGHLIGHT_ID);
+            const styleExists = !!document.getElementById('__ruyi_xpath_picker_style__');
+            if (!panelExists || !highlightExists || !styleExists) {
+                restoreUI();
+            }
+        });
+        observer.observe(document.documentElement || document, {
+            childList: true,
+            subtree: true,
+        });
+
+        window.setInterval(() => {
+            const panelExists = !!document.getElementById(PANEL_ID);
+            const highlightExists = !!document.getElementById(HIGHLIGHT_ID);
+            const styleExists = !!document.getElementById('__ruyi_xpath_picker_style__');
+            if (!panelExists || !highlightExists || !styleExists) {
+                restoreUI();
+            }
+        }, 1200);
+
+        state.watchdogBound = true;
     }
 
     function init() {
@@ -1297,13 +1374,14 @@ class FirefoxBase(BasePage):
         }
         ensureHighlight();
         bindEvents();
+        bindWatchdog();
         syncTopUI();
     }
 
     window.__ruyiInitXPathPicker = init;
     topWindowRef.__ruyiInitXPathPicker = topWindowRef.__ruyiInitXPathPicker || init;
     init();
-})();
+}
 """
 
     # ===== __call__ 快捷方式 =====
@@ -1716,6 +1794,7 @@ class FirefoxBase(BasePage):
         bidi_context.traverse_history(
             self._driver._browser_driver, self._context_id, -1
         )
+        self._reinject_xpath_picker_if_needed()
         return self
 
     def forward(self) -> "FirefoxBase":
@@ -1725,6 +1804,7 @@ class FirefoxBase(BasePage):
             self
         """
         bidi_context.traverse_history(self._driver._browser_driver, self._context_id, 1)
+        self._reinject_xpath_picker_if_needed()
         return self
 
     def refresh(self, ignore_cache=False) -> "FirefoxBase":
