@@ -153,6 +153,15 @@ class FirefoxBase(BasePage):
             logger.debug("XPath picker 重新注入失败: %s", e)
 
     @staticmethod
+    def _is_expected_navigation_abort(error):
+        """判断是否为 Firefox 导航被页面主动中断的可预期情况。"""
+        if not isinstance(error, BiDiError):
+            return False
+
+        text = "{} {}".format(error.error or "", error.bidi_message or "").upper()
+        return "NS_BINDING_ABORTED" in text
+
+    @staticmethod
     def _get_xpath_picker_frame_bridge_script():
         return r"""
 (source) => {
@@ -1776,7 +1785,9 @@ class FirefoxBase(BasePage):
             )
         except BiDiError as e:
             # navigate 失败不一定是错误（如 none 模式下立即返回）
-            if "timeout" not in str(e.error).lower():
+            if self._is_expected_navigation_abort(e):
+                logger.debug("导航被页面主动中断（通常是自动刷新/跳转）: %s", e)
+            elif "timeout" not in str(e.error).lower():
                 logger.warning("导航错误: %s", e)
         finally:
             if timeout:
@@ -1818,12 +1829,18 @@ class FirefoxBase(BasePage):
         """
         wait_map = {"normal": "complete", "eager": "interactive", "none": "none"}
         wait = wait_map.get(self._load_mode, "complete")
-        bidi_context.reload(
-            self._driver._browser_driver,
-            self._context_id,
-            ignore_cache=ignore_cache,
-            wait=wait,
-        )
+        try:
+            bidi_context.reload(
+                self._driver._browser_driver,
+                self._context_id,
+                ignore_cache=ignore_cache,
+                wait=wait,
+            )
+        except BiDiError as e:
+            if self._is_expected_navigation_abort(e):
+                logger.debug("刷新被页面主动中断（通常是自动刷新/跳转）: %s", e)
+            else:
+                raise
         self._reinject_xpath_picker_if_needed()
         return self
 
