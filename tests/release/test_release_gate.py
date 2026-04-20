@@ -61,6 +61,43 @@ def test_release_gate_response_body(page, server):
 
 
 @pytest.mark.release
+def test_release_gate_storage(page, fixture_page_url):
+    page.get(fixture_page_url("storage_fixture.html"))
+    page.local_storage.clear()
+    page.local_storage.set("rg", "pass")
+    assert page.local_storage.get("rg") == "pass"
+
+
+@pytest.mark.release
+@pytest.mark.local_server
+def test_release_gate_mock_response(page, server):
+    def handler(req):
+        if "/api/data" in req.url:
+            req.mock(
+                '{"gate": true}',
+                headers={
+                    "content-type": "application/json",
+                    "access-control-allow-origin": "*",
+                },
+            )
+        else:
+            req.continue_request()
+
+    page.get("about:blank")
+    page.intercept.start_requests(handler)
+    try:
+        result = page.run_js(
+            "return fetch(arguments[0]).then(r => r.json()).catch(e => ({error:String(e)}));",
+            server.get_url("/api/data"),
+            as_expr=False,
+        )
+    finally:
+        page.intercept.stop()
+
+    assert result.get("gate") is True
+
+
+@pytest.mark.release
 @pytest.mark.local_server
 def test_release_gate_cookies(page, server):
     page.get(server.get_url("/set-cookie"))

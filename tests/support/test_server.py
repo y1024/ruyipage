@@ -107,6 +107,14 @@ class TestServer(object):
                     )
                     return
 
+                if path == "/api/error":
+                    self._write_json(
+                        500,
+                        {"status": "error", "message": "server error"},
+                        headers=self._cors_headers(),
+                    )
+                    return
+
                 if path == "/api/auth":
                     auth_header = self.headers.get("Authorization", "")
                     expected = "Basic " + base64.b64encode(b"user:pass").decode("ascii")
@@ -126,6 +134,16 @@ class TestServer(object):
 
                 if path == "/nav/basic":
                     body = """<!DOCTYPE html><html><head><meta charset='utf-8'><title>Nav Basic</title></head><body><h1 id='nav-basic'>Nav Basic</h1></body></html>"""
+                    body_bytes = body.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body_bytes)))
+                    self.end_headers()
+                    self.wfile.write(body_bytes)
+                    return
+
+                if path == "/nav/history":
+                    body = """<!DOCTYPE html><html><head><meta charset='utf-8'><title>Nav History</title></head><body><h1 id='nav-history'>Nav History</h1></body></html>"""
                     body_bytes = body.encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")

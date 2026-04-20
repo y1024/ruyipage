@@ -23,3 +23,8 @@ def test_launch_entry_works():
         assert page.url == "about:blank"
     finally:
         page.quit()
+
+
+@pytest.mark.smoke
+def test_launched_page_fixture_works(launched_page):
+    assert launched_page.url == "about:blank"
