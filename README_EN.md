@@ -183,6 +183,7 @@ page = launch(
     browser_path=r"D:\Firefox\firefox.exe",
     user_dir=r"D:\ruyipage_userdir",
     headless=False,
+    close_on_exit=True,
     port=9222,
 )
 
@@ -190,6 +191,76 @@ page.get("https://www.example.com")
 print(page.title)
 page.quit()
 ```
+
+Where:
+
+- `close_on_exit=True` means the browser started by `ruyiPage` is closed automatically when the Python process exits.
+- If you want to keep the browser window open for manual follow-up after the script exits, set `close_on_exit=False`.
+- If you are attaching to an existing browser through `attach()` or `existing_only(True)`, Python exit only disconnects the session even when `close_on_exit=True`; it does not close the external browser process.
+
+### Common `FirefoxOptions` API
+
+If you want more explicit control over browser startup behavior, use `FirefoxOptions` directly.
+
+Start with a complete example that covers the most common options:
+
+```python
+from ruyipage import FirefoxOptions, FirefoxPage
+
+opts = FirefoxOptions()
+opts.set_browser_path(r"D:\Firefox\firefox.exe")
+opts.set_user_dir(r"D:\ruyipage_userdir")
+opts.set_port(9222)
+opts.set_proxy("http://127.0.0.1:7890")
+opts.set_window_size(1440, 900)
+opts.headless(False)
+opts.private_mode(False)
+opts.close_on_exit(True)
+
+page = FirefoxPage(opts)
+page.get("https://www.example.com")
+print(page.title)
+page.quit()
+```
+
+The table below summarizes the `opt` options that users can call directly today.
+
+| Method | What it does | Common use case |
+| --- | --- | --- |
+| `set_browser_path(path)` | Set the Firefox executable path | Firefox is not in the default location, you use a portable build, or multiple Firefox versions are installed |
+| `set_address(address)` | Set the debug address as `host:port` | You already know the exact debug address and want to connect to that instance |
+| `set_port(port)` | Set the remote debugging port | Multiple browser instances on one machine, or avoiding port conflicts |
+| `set_auto_port(True)` | Automatically find an available port | You do not want to manage ports manually, especially in batch scripts |
+| `existing_only(True)` | Attach to an existing browser without launching a new one | Connecting to a manually started Firefox, ADS, or a fingerprint browser |
+| `set_retry(times, interval)` | Configure connection retries and retry interval | Slow startup, remote instability, or delayed debug-port readiness |
+| `set_profile(path)` | Set the Firefox profile directory | Reusing login state, cookies, extensions, and preferences long-term |
+| `set_user_dir(path)` | Beginner-friendly alias for `set_profile()` | When `user_dir` is easier to understand in tutorials and team scripts |
+| `close_on_exit(True/False)` | Control whether Python exit closes the browser | Default `True` for script-style cleanup; use `False` to leave the browser open for manual follow-up |
+| `private_mode(True/False)` | Enable native Firefox private browsing mode | You want a private session rather than a normal browsing window |
+| `headless(True/False)` | Enable or disable headless mode | Servers, background jobs, or flows that do not need a visible UI |
+| `set_argument(arg, value=None)` | Add a custom startup argument | Passing through native Firefox startup flags |
+| `remove_argument(arg)` | Remove a previously added startup argument | Reusing an options object and undoing a startup flag |
+| `set_pref(key, value)` | Write Firefox preferences | Adjusting `about:config`, proxy behavior, download behavior, and other browser prefs |
+| `set_window_size(width, height)` | Set the startup window size | Controlling initial viewport/layout behavior for target sites |
+| `set_proxy(proxy)` | Set an HTTP / HTTPS / SOCKS proxy | Proxy routing, IP switching, geo-specific access |
+| `set_download_path(path)` | Set the default download directory | Saving downloaded files into a fixed location |
+| `set_load_mode(mode)` | Control page-load waiting strategy | Balancing speed and stability |
+| `set_timeouts(base, page_load, script)` | Set element lookup, page load, and script timeouts | Slow pages, slow endpoints, or long-running scripts |
+| `set_user_prompt_handler(handler)` | Set default handling for alert / confirm / prompt | Auto-accepting or dismissing dialogs so flows do not block |
+| `set_fpfile(path)` | Pass a fingerprint config file through `--fpfile` | Using a Firefox build or fingerprint browser that supports this argument |
+| `enable_xpath_picker(True/False)` | Enable the on-page XPath picker panel | Capturing elements, viewing XPath, and generating locator code |
+| `enable_action_visual(True/False)` | Enable action visualization for debugging | Inspecting human-like cursor movement, click trails, and key input |
+| `quick_start(...)` | Apply a beginner-friendly startup preset in one call | Small scripts, demos, and quick-start usage |
+
+Notes:
+
+- `close_on_exit(True)` is enabled by default, but it only auto-closes browsers started by `ruyiPage` itself.
+- If you attach to an external browser through `existing_only(True)` or `attach()`, Python exit only disconnects the session and does not close the external browser process.
+- If you do not set `user_dir` / `profile`, `ruyiPage` creates a temporary profile automatically. That is convenient for one-off scripts.
+- `set_fpfile()` currently mainly passes the path via `--fpfile=...` and reads proxy-auth fields from that file. It should not be described as a universal auto-fingerprint configuration entry.
+- `quick_start()` is a convenience preset, not a replacement for every `FirefoxOptions` method. When you need precise control, combine the individual `FirefoxOptions` methods directly.
+
+If you only want the fastest way to launch, use `launch()`. If you want startup behavior to be more explicit and easier to hand off to end users, prefer `FirefoxOptions`.
 
 ### Enable Private Mode
 

@@ -51,6 +51,7 @@ class FirefoxOptions(object):
             "script": 30,
         }
         self._existing_only = False
+        self._close_on_exit = True
         self._retry_times = 10
         self._retry_interval = 2.0
         self._proxy = None
@@ -115,6 +116,11 @@ class FirefoxOptions(object):
     @property
     def retry_times(self):
         return self._retry_times
+
+    @property
+    def close_on_exit_enabled(self):
+        """Python 进程退出时是否自动关闭浏览器。"""
+        return self._close_on_exit
 
     @property
     def retry_interval(self):
@@ -391,6 +397,26 @@ class FirefoxOptions(object):
         self._existing_only = on_off
         return self
 
+    def close_on_exit(self, on_off=True):
+        """设置 Python 进程退出时是否自动关闭浏览器。
+
+        Args:
+            on_off: ``True`` 表示当前 Python 程序退出时自动关闭由 ruyipage
+                    启动的浏览器；``False`` 表示仅断开连接，不主动关闭浏览器。
+
+        Returns:
+            self
+
+        说明：
+            - 默认值为 ``True``，更符合“脚本结束即收尾”的直觉。
+            - 对 ``existing_only(True)`` 接管的外部浏览器，此选项不会强制杀掉
+              外部进程；退出时仍只做断开连接，避免误关用户自己打开的浏览器。
+            - 对 ruyipage 自动创建的临时 profile，若执行完整关闭，会一并清理
+              该临时目录。
+        """
+        self._close_on_exit = bool(on_off)
+        return self
+
     def set_auto_port(self, on_off=True):
         """自动寻找可用端口
 
@@ -555,6 +581,7 @@ class FirefoxOptions(object):
         *,
         browser_path=None,
         user_dir=None,
+        close_on_exit=True,
         private=False,
         headless=False,
         xpath_picker=False,
@@ -574,6 +601,8 @@ class FirefoxOptions(object):
                 适用于 Firefox 安装在非默认目录时。
             user_dir: 用户目录 / profile 目录。
                 适用于希望复用登录态、Cookie、扩展时。
+            close_on_exit: Python 程序退出时是否自动关闭浏览器。
+                默认 ``True``，适合脚本跑完自动收尾。
             private: 是否启用 Firefox 私密浏览模式。
             headless: 是否无头
             xpath_picker: 是否启用页面 XPath 选择浮窗
@@ -599,6 +628,7 @@ class FirefoxOptions(object):
             self.set_browser_path(browser_path)
         if user_dir:
             self.set_user_dir(user_dir)
+        self.close_on_exit(close_on_exit)
         self.private_mode(private)
         self.headless(headless)
         self.enable_xpath_picker(xpath_picker)

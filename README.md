@@ -185,6 +185,7 @@ page = launch(
     browser_path=r"D:\Firefox\firefox.exe",
     user_dir=r"D:\ruyipage_userdir",
     headless=False,
+    close_on_exit=True,
     port=9222,
 )
 
@@ -192,6 +193,76 @@ page.get("https://www.example.com")
 print(page.title)
 page.quit()
 ```
+
+其中：
+
+- `close_on_exit=True` 表示 Python 程序退出时，自动关闭由 `ruyiPage` 启动的浏览器。
+- 如果你希望脚本退出后保留浏览器窗口继续手动操作，可以改成 `close_on_exit=False`。
+- 如果你用的是 `attach()` 或 `existing_only(True)` 接管已有浏览器，即使开启 `close_on_exit=True`，退出时也只会断开连接，不会误关外部浏览器。
+
+### FirefoxOptions 常用 API
+
+如果你准备把浏览器启动行为写得更可控，推荐直接使用 `FirefoxOptions`。
+
+先看一个覆盖常见选项的完整例子：
+
+```python
+from ruyipage import FirefoxOptions, FirefoxPage
+
+opts = FirefoxOptions()
+opts.set_browser_path(r"D:\Firefox\firefox.exe")
+opts.set_user_dir(r"D:\ruyipage_userdir")
+opts.set_port(9222)
+opts.set_proxy("http://127.0.0.1:7890")
+opts.set_window_size(1440, 900)
+opts.headless(False)
+opts.private_mode(False)
+opts.close_on_exit(True)
+
+page = FirefoxPage(opts)
+page.get("https://www.example.com")
+print(page.title)
+page.quit()
+```
+
+下面这张表把目前用户可直接使用的 `opt` 选项做一个集中说明。
+
+| 方法 | 作用 | 常见场景 |
+| --- | --- | --- |
+| `set_browser_path(path)` | 指定 Firefox 可执行文件路径 | Firefox 不在默认目录、使用便携版、机器上装了多个 Firefox |
+| `set_address(address)` | 设置调试地址 `host:port` | 你已经有固定调试地址，想直接连指定实例 |
+| `set_port(port)` | 设置远程调试端口 | 同机多开、避免和别的浏览器端口冲突 |
+| `set_auto_port(True)` | 自动寻找可用端口 | 不想自己手动挑端口，适合脚本批量启动 |
+| `existing_only(True)` | 只接管已有浏览器，不启动新浏览器 | 连接手动启动的 Firefox、ADS、指纹浏览器 |
+| `set_retry(times, interval)` | 设置连接重试次数和间隔 | 启动慢、远程环境抖动、端口就绪较慢 |
+| `set_profile(path)` | 指定 Firefox profile 目录 | 想长期复用登录态、Cookie、扩展、首选项 |
+| `set_user_dir(path)` | `set_profile()` 的新手友好别名 | 教程或团队脚本里更习惯写 `user_dir` |
+| `close_on_exit(True/False)` | 设置 Python 退出时是否自动关闭浏览器 | 默认 `True`，适合脚本跑完自动收尾；传 `False` 可保留浏览器继续手动操作 |
+| `private_mode(True/False)` | 开启 Firefox 原生私密模式 | 不想带上普通窗口历史状态，想走私密会话 |
+| `headless(True/False)` | 设置无头模式 | 服务器运行、后台任务、无需显示界面 |
+| `set_argument(arg, value=None)` | 追加自定义启动参数 | 需要透传 Firefox 原生启动参数 |
+| `remove_argument(arg)` | 移除之前设置过的启动参数 | 复用配置对象时撤销某个参数 |
+| `set_pref(key, value)` | 写入 Firefox 首选项 | 调整 about:config、代理策略、下载行为等 |
+| `set_window_size(width, height)` | 设置启动窗口大小 | 控制初始分辨率、适配目标站点布局 |
+| `set_proxy(proxy)` | 设置 HTTP / HTTPS / SOCKS 代理 | 需要代理出口、IP 切换、地域访问 |
+| `set_download_path(path)` | 设置默认下载目录 | 自动下载文件并落盘到固定目录 |
+| `set_load_mode(mode)` | 设置页面加载等待策略 | 在速度和稳定性之间做取舍 |
+| `set_timeouts(base, page_load, script)` | 设置元素查找、页面加载、脚本执行超时 | 页面慢、接口慢、脚本执行时间较长 |
+| `set_user_prompt_handler(handler)` | 设置 alert / confirm / prompt 默认处理策略 | 自动接受或取消弹窗，避免流程被阻塞 |
+| `set_fpfile(path)` | 通过 `--fpfile` 传入指纹配置文件 | 配合支持该参数的 Firefox / 指纹浏览器使用 |
+| `enable_xpath_picker(True/False)` | 启用页面 XPath 选择浮窗 | 录元素、看 XPath、生成定位代码 |
+| `enable_action_visual(True/False)` | 启用鼠标行为可视化调试 | 调试拟人移动、点击轨迹、键盘输入 |
+| `quick_start(...)` | 一次性设置常用启动参数 | 给新手脚本或快速演示准备统一入口 |
+
+说明：
+
+- `close_on_exit(True)` 默认开启，但只会自动关闭 **ruyiPage 自己启动的浏览器**。
+- 如果你是通过 `existing_only(True)` 或 `attach()` 接管外部浏览器，Python 退出时只会断开连接，不会误关用户手动打开的浏览器。
+- 不设置 `user_dir` / `profile` 时，`ruyiPage` 会自动创建临时 profile，更适合一次性脚本。
+- `set_fpfile()` 当前主要是把路径通过 `--fpfile=...` 传给浏览器，并读取其中的代理认证字段；它不是一个自动填充所有浏览器指纹参数的万能入口。
+- `quick_start()` 适合快速开始，但不是全部配置项的替代品；需要精细控制时，仍建议直接组合 `FirefoxOptions` 的各个方法。
+
+如果你只是想快速启动，优先用 `launch()`；如果你想把浏览器行为写得更明确、更适合对外给用户使用，优先用 `FirefoxOptions`。
 
 ### 开启隐私模式
 

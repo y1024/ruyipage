@@ -480,6 +480,10 @@ class ContextDriver(object):
         """注册全局事件回调（不限 context）"""
         self._browser_driver.set_callback(event, callback, None, immediate)
 
+    def remove_global_callback(self, event, immediate=False):
+        """移除全局事件回调（不限 context）。"""
+        self._browser_driver.remove_callback(event, None, immediate)
+
     def remove_callback(self, event, immediate=False):
         """移除当前 context 的事件回调"""
         self._browser_driver.remove_callback(event, self.context_id, immediate)

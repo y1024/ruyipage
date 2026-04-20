@@ -46,6 +46,7 @@ BiDi 协议提供三个拦截阶段，分别用于不同场景：
 import base64
 import time
 import threading
+import threading
 from queue import Queue, Empty
 from typing import Dict, Optional, List, Union
 
@@ -195,6 +196,7 @@ class InterceptedRequest(object):
         self._collector = collector
         self._response_collector = response_collector
         self._handled = False
+        self._interceptor = None
 
         self._request_id: str = self._request.get("request", "")
         self._url: str = self._request.get("url", "")
@@ -528,6 +530,31 @@ class InterceptedRequest(object):
             except Exception:
                 pass
             time.sleep(0.3)
+
+        # 某些用法会在 continue_request()/continue_response() 后立即 stop()，
+        # 这时响应完成事件可能还没来得及落到 DataCollector。若 Interceptor
+        # 已停止但页面仍存活，这里再用当前页面的小等待做一次补偿，尽量兼容
+        # `req.continue_*(); page.intercept.stop(); req.response_body` 这种直觉式写法。
+        interceptor = getattr(self, "_interceptor", None)
+        owner = getattr(interceptor, "_owner", None) if interceptor else None
+        if owner is not None:
+            for _ in range(10):
+                try:
+                    owner.wait(0.2)
+                except Exception:
+                    break
+                try:
+                    data = self._response_collector.get(self.request_id, data_type="response")
+                    if data.has_data:
+                        decoded = self._decode_body_value(data.base64)
+                        if decoded is not None:
+                            return decoded
+                        decoded = self._decode_body_value(data.bytes)
+                        if decoded is not None:
+                            return decoded
+                        return None
+                except Exception:
+                    pass
 
         return None
 
@@ -929,8 +956,44 @@ class Interceptor(object):
         self._subscription_id = None
         self._request_collector = None
         self._response_collector = None
+        self._retired_collectors = []
+        self._retired_subscriptions = []
         self._handler = None
         self._queue = Queue()
+
+    def _cleanup_retired_resources(self):
+        """清理上一轮 stop() 之后延迟保留的资源。
+
+        设计原因：
+            - ``page.intercept.wait()`` 返回的 ``InterceptedRequest`` 可能在
+              ``page.intercept.stop()`` 之后才去读取 ``body`` / ``response_body``。
+            - 如果 stop() 立刻 remove collector，外部已拿到的 req 就无法再读取。
+            - 对 ``response_body`` 而言，除了 collector，相关 network 订阅也必须暂时
+              保留，否则 ``responseCompleted`` 事件不会继续进入 collector。
+            - 因此这里把这些资源的真正清理延后到下一次 start() 前统一执行。
+        """
+        pending_subscriptions = self._retired_subscriptions
+        self._retired_subscriptions = []
+        for subscription in pending_subscriptions:
+            if not subscription:
+                continue
+            try:
+                bidi_session.unsubscribe(
+                    self._owner._driver._browser_driver,
+                    subscription=subscription,
+                )
+            except Exception:
+                pass
+
+        pending_collectors = self._retired_collectors
+        self._retired_collectors = []
+        for collector in pending_collectors:
+            if not collector:
+                continue
+            try:
+                collector.remove()
+            except Exception:
+                pass
 
     @property
     def active(self):
@@ -1020,6 +1083,8 @@ class Interceptor(object):
         if self._active:
             self.stop()
 
+        self._cleanup_retired_resources()
+
         if phases is None:
             phases = ["beforeRequestSent"]
 
@@ -1063,6 +1128,11 @@ class Interceptor(object):
             events.append("network.responseStarted")
         if "authRequired" in phases:
             events.append("network.authRequired")
+        if collect_response and "network.responseCompleted" not in events:
+            # DataCollector 采集响应体依赖 responseCompleted 阶段的数据落盘。
+            # 仅创建 collector 还不够，当前 session 也必须订阅该事件，
+            # 否则 req.response_body 会一直拿不到内容。
+            events.append("network.responseCompleted")
 
         if events:
             sub = bidi_session.subscribe(
@@ -1162,8 +1232,14 @@ class Interceptor(object):
     def stop(self):
         """停止拦截，清理所有资源。
 
-        移除 BiDi 拦截注册、取消事件订阅、清理内部 DataCollector。
+        移除 BiDi 拦截注册、取消事件订阅，并延迟清理内部 DataCollector。
         调用后 ``active`` 属性变为 ``False``。
+
+        说明：
+            - 为了支持 ``req = page.intercept.wait()`` 后，先 ``req.continue_*()``、
+              再 ``page.intercept.stop()``、最后读取 ``req.response_body`` 的用法，
+              已返回给用户的 collector 不会在 stop() 当场 remove。
+            - 这些 collector 会在下一次 ``start()`` 前统一清理。
 
         可安全重复调用（幂等）。
 
@@ -1197,27 +1273,24 @@ class Interceptor(object):
             self._intercept_id = None
 
         if self._subscription_id:
-            try:
-                bidi_session.unsubscribe(
-                    self._owner._driver._browser_driver,
-                    subscription=self._subscription_id,
-                )
-            except Exception:
-                pass
+            if self._response_collector:
+                self._retired_subscriptions.append(self._subscription_id)
+            else:
+                try:
+                    bidi_session.unsubscribe(
+                        self._owner._driver._browser_driver,
+                        subscription=self._subscription_id,
+                    )
+                except Exception:
+                    pass
             self._subscription_id = None
 
         if self._request_collector:
-            try:
-                self._request_collector.remove()
-            except Exception:
-                pass
+            self._retired_collectors.append(self._request_collector)
             self._request_collector = None
 
         if self._response_collector:
-            try:
-                self._response_collector.remove()
-            except Exception:
-                pass
+            self._retired_collectors.append(self._response_collector)
             self._response_collector = None
 
         drv = self._owner._driver
@@ -1226,7 +1299,7 @@ class Interceptor(object):
             "network.responseStarted",
             "network.authRequired",
         ):
-            drv.remove_callback(ev)
+            drv.remove_global_callback(ev)
 
         return self
 
@@ -1270,12 +1343,15 @@ class Interceptor(object):
     def _on_intercept(self, params):
         if not self._active:
             return
+        if not params.get("intercepts") and not params.get("isBlocked"):
+            return
         req = InterceptedRequest(
             params,
             self._owner._driver._browser_driver,
             collector=self._request_collector,
             response_collector=self._response_collector,
         )
+        req._interceptor = self
         if self._handler:
             try:
                 self._handler(req)
@@ -1289,24 +1365,7 @@ class Interceptor(object):
     def _on_response_intercept(self, params):
         if not self._active:
             return
-        req = InterceptedRequest(
-            params,
-            self._owner._driver._browser_driver,
-            collector=self._request_collector,
-            response_collector=self._response_collector,
-        )
-        if self._handler:
-            try:
-                self._handler(req)
-            except Exception as e:
-                logger.warning("响应拦截回调异常: %s", e)
-            if not req.handled:
-                req.continue_response()
-        else:
-            self._queue.put(req)
-
-    def _on_auth(self, params):
-        if not self._active:
+        if not params.get("intercepts") and not params.get("isBlocked"):
             return
         req = InterceptedRequest(
             params,
@@ -1314,6 +1373,46 @@ class Interceptor(object):
             collector=self._request_collector,
             response_collector=self._response_collector,
         )
+        req._interceptor = self
+        if self._handler:
+            # responseStarted 场景里，用户回调很容易在 continue_response() 后
+            # 继续同步读取 req.response_body。该属性会等待 responseCompleted，
+            # 如果仍在当前事件消费线程内执行，就会把后续 network.responseCompleted
+            # 事件自己堵住，表现为页面后续资源加载被串行卡住。
+            #
+            # 这里改为独立短线程执行用户回调：
+            # 1. 不阻塞 BrowserBiDiDriver 的事件消费线程
+            # 2. 允许 responseCompleted 事件及时到达 DataCollector
+            # 3. 仍保留“未处理则自动 continue_response()”的兜底语义
+
+            def _run_handler():
+                try:
+                    self._handler(req)
+                except Exception as e:
+                    logger.warning("响应拦截回调异常: %s", e)
+                if not req.handled:
+                    req.continue_response()
+
+            threading.Thread(
+                target=_run_handler,
+                name="ruyipage-response-intercept",
+                daemon=True,
+            ).start()
+        else:
+            self._queue.put(req)
+
+    def _on_auth(self, params):
+        if not self._active:
+            return
+        if not params.get("intercepts") and not params.get("isBlocked"):
+            return
+        req = InterceptedRequest(
+            params,
+            self._owner._driver._browser_driver,
+            collector=self._request_collector,
+            response_collector=self._response_collector,
+        )
+        req._interceptor = self
         if self._handler:
             try:
                 self._handler(req)

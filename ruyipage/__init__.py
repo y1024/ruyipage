@@ -177,6 +177,7 @@ def launch(
     port=9222,
     browser_path=None,
     user_dir=None,
+    close_on_exit=True,
     window_size=(1280, 800),
     timeout_base=10,
     timeout_page_load=30,
@@ -194,6 +195,9 @@ def launch(
             适用于 Firefox 安装在非默认目录时。
         user_dir: 用户目录 / profile 目录。
             适用于希望复用登录态、Cookie、扩展时。
+        close_on_exit: Python 程序退出时是否自动关闭浏览器。
+            默认 ``True``。仅对 ruyipage 自己启动的浏览器生效；
+            attach 已有浏览器时只断开连接，不主动关闭外部进程。
         window_size: 窗口大小 (width, height)
         timeout_base: 基础超时
         timeout_page_load: 页面加载超时
@@ -213,6 +217,7 @@ def launch(
         private=private,
         xpath_picker=xpath_picker,
         action_visual=action_visual,
+        close_on_exit=close_on_exit,
         window_size=window_size,
         timeout_base=timeout_base,
         timeout_page_load=timeout_page_load,
@@ -237,6 +242,8 @@ def attach(address="127.0.0.1:9222"):
     说明:
         - 用于连接“已手动启动”的 Firefox 调试端口。
         - 内部启用 existing_only，避免重复启动浏览器进程。
+        - 即使设置了 ``close_on_exit(True)``，这里在 Python 退出时也只会
+          断开连接，不会主动关闭外部浏览器。
     """
     opts = FirefoxOptions().set_address(address).existing_only(True)
     return FirefoxPage(opts)

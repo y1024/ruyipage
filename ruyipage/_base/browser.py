@@ -784,13 +784,13 @@ class Firefox(object):
                 self._BROWSERS.pop(self._address, None)
             self._initialized = False
 
-    def _register_exit_cleanup(self):
-        if self._atexit_registered:
-            return
-        atexit.register(self._cleanup_on_exit)
-        self._atexit_registered = True
+    def _detach_on_exit(self):
+        """在解释器退出时仅断开当前连接，不主动关闭浏览器进程。
 
-    def _cleanup_on_exit(self):
+        该路径适用于：
+            - ``close_on_exit(False)``
+            - ``existing_only(True)`` 接管的外部浏览器
+        """
         if not self._driver:
             return
         self._driver.mark_closing()
@@ -809,6 +809,41 @@ class Firefox(object):
         except Exception:
             pass
         self._driver = None
+
+    def _should_close_browser_on_exit(self):
+        """判断解释器退出时是否应执行完整浏览器关闭。
+
+        设计原则：
+            - 默认随 Python 程序退出而关闭浏览器，符合脚本型使用场景。
+            - 对 ``existing_only(True)`` 接管的外部浏览器，始终只断开连接，
+              避免误关用户手动打开的浏览器进程。
+        """
+        if not self._driver:
+            return False
+        if not getattr(self._options, "close_on_exit_enabled", True):
+            return False
+        if getattr(self._options, "is_existing_only", False):
+            return False
+        return True
+
+    def _register_exit_cleanup(self):
+        if self._atexit_registered:
+            return
+        atexit.register(self._cleanup_on_exit)
+        self._atexit_registered = True
+
+    def _cleanup_on_exit(self):
+        if not self._driver:
+            return
+
+        if self._should_close_browser_on_exit():
+            try:
+                self.quit(timeout=3, force=True)
+            except Exception:
+                self._detach_on_exit()
+            return
+
+        self._detach_on_exit()
 
     def reconnect(self):
         """重新连接"""
