@@ -101,6 +101,14 @@ pip install ruyiPage --upgrade
 
 If this is your first installation, the command above also works as the default way to install the latest version.
 
+To enable **async (async/await) support**:
+
+```bash
+pip install ruyiPage[async] --upgrade
+```
+
+This additionally installs `greenlet` and `websockets`. The synchronous API remains completely unaffected.
+
 If you run the project from source, or distribute the source tree to students, install the project dependencies as well:
 
 ```bash
@@ -123,6 +131,31 @@ page.get("https://www.example.com")
 print(page.title)
 page.quit()
 ```
+
+### Async (async/await) launch
+
+```python
+import asyncio
+from ruyipage.aio import launch
+
+async def main():
+    page = await launch()
+    await page.get("https://www.example.com")
+    title = await page.get_title()
+    print(title)
+
+    el = await page.ele("#search")
+    await el.click_self()
+    await el.input("hello async")
+
+    await page.quit()
+
+asyncio.run(main())
+```
+
+The async API mirrors the synchronous API exactly -- just add `async/await`.
+Properties (e.g. `page.title`) become async methods (e.g. `await page.get_title()`).
+Full examples: `quickstart_bing_search_async.py` and `quickstart_cloudflare_async.py` in the project root.
 
 ### JS Event `isTrusted` Comparison
 

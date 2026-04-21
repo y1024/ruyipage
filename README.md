@@ -103,6 +103,14 @@ pip install ruyiPage --upgrade
 
 如果你是首次安装，也可以直接用上面的命令获取最新版。
 
+如果需要**异步（async/await）支持**：
+
+```bash
+pip install ruyiPage[async] --upgrade
+```
+
+这会额外安装 `greenlet` 和 `websockets`，同步 API 完全不受影响。
+
 如果你是从源码运行，或给学员分发项目源码，建议同时安装项目依赖：
 
 ```bash
@@ -125,6 +133,31 @@ page.get("https://www.example.com")
 print(page.title)
 page.quit()
 ```
+
+### 异步（async/await）启动
+
+```python
+import asyncio
+from ruyipage.aio import launch
+
+async def main():
+    page = await launch()
+    await page.get("https://www.example.com")
+    title = await page.get_title()
+    print(title)
+
+    el = await page.ele("#search")
+    await el.click_self()
+    await el.input("hello async")
+
+    await page.quit()
+
+asyncio.run(main())
+```
+
+异步 API 的方法名与同步版完全一致，只需加 `async/await`。
+属性（如 `page.title`）变为异步方法（如 `await page.get_title()`）。
+完整示例见根目录 `quickstart_bing_search_async.py` 和 `quickstart_cloudflare_async.py`。
 
 ### JS 事件 `isTrusted` 对比能力
 
