@@ -156,9 +156,20 @@ def launch_firefox(cmd, env=None):
     if env:
         kwargs["env"] = env
 
-    # Windows 下隐藏控制台窗口
+    # Windows: 隐藏控制台窗口 + 脱离 Job Object（避免调试器停止时连带杀死浏览器）
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
+    else:
+        # Unix/macOS: 脱离进程组
+        kwargs["start_new_session"] = True
 
     logger.debug("启动 Firefox: %s", " ".join(cmd))
-    return subprocess.Popen(cmd, **kwargs)
+    try:
+        return subprocess.Popen(cmd, **kwargs)
+    except OSError:
+        # 某些受限环境不允许 BREAKAWAY_FROM_JOB，回退
+        if "creationflags" in kwargs:
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            return subprocess.Popen(cmd, **kwargs)
+        raise

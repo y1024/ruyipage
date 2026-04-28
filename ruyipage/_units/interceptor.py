@@ -51,6 +51,7 @@ from queue import Queue, Empty
 from typing import Dict, Optional, List, Union
 
 from .._bidi import network as bidi_network
+from .._functions.settings import Settings
 from .._functions.sleep import sleep as _sleep
 from .._functions.queue_utils import queue_get as _queue_get
 from .._bidi import session as bidi_session
@@ -484,17 +485,16 @@ class InterceptedRequest(object):
 
     @property
     def response_body(self) -> Optional[str]:
-        """响应体字符串。
+        """响应体字符串（便捷属性）。
+
+        委托给 ``get_response_body()``，使用默认超时
+        （``Settings.response_body_timeout``，默认 10 秒）。
+
+        如需自定义超时，请直接调用::
+
+            body = req.get_response_body(timeout=30)
 
         **前提**：启动拦截时必须传入 ``collect_response=True``，否则始终返回 ``None``。
-
-        此属性会自动等待 ``responseCompleted`` 事件（最多约 3 秒），然后从内部
-        DataCollector 读取并解码响应体。典型调用时序::
-
-            page.intercept.start_requests(collect_response=True)
-            req = page.intercept.wait(timeout=5)
-            req.continue_request()       # 先放行请求
-            body = req.response_body     # 等待响应完成，自动读取并解码
 
         Returns:
             str 或 None: 解码后的响应体字符串。若未启用 ``collect_response``、
@@ -515,10 +515,46 @@ class InterceptedRequest(object):
 
             page.intercept.stop()
         """
+        return self.get_response_body()
+
+    def get_response_body(self, timeout=None) -> Optional[str]:
+        """读取响应体，等待最多 ``timeout`` 秒。
+
+        与 ``response_body`` 属性功能相同，但允许自定义超时时长。
+        内部使用指数退避轮询 ``responseCompleted`` 事件对应的
+        DataCollector 数据。
+
+        **前提**：启动拦截时必须传入 ``collect_response=True``，
+        否则始终返回 ``None``。
+
+        Args:
+            timeout: 最大等待秒数。``None`` 时使用
+                ``Settings.response_body_timeout``（默认 10 秒）。
+
+        Returns:
+            str 或 None: 解码后的响应体字符串。
+
+        Examples::
+
+            # 默认超时
+            body = req.get_response_body()
+
+            # 为已知慢接口设置更长超时
+            body = req.get_response_body(timeout=30)
+
+            # 全局修改默认超时
+            from ruyipage import Settings
+            Settings.response_body_timeout = 20
+        """
         if not self._response_collector or not self.request_id:
             return None
+        if timeout is None:
+            timeout = Settings.response_body_timeout
 
-        for _ in range(10):
+        deadline = time.monotonic() + timeout
+        interval = 0.1  # 起步短间隔，快速响应已就绪的数据
+
+        while True:
             try:
                 data = self._response_collector.get(self.request_id, data_type="response")
                 if data.has_data:
@@ -531,32 +567,11 @@ class InterceptedRequest(object):
                     return None
             except Exception:
                 pass
-            _sleep(0.3)
-
-        # 某些用法会在 continue_request()/continue_response() 后立即 stop()，
-        # 这时响应完成事件可能还没来得及落到 DataCollector。若 Interceptor
-        # 已停止但页面仍存活，这里再用当前页面的小等待做一次补偿，尽量兼容
-        # `req.continue_*(); page.intercept.stop(); req.response_body` 这种直觉式写法。
-        interceptor = getattr(self, "_interceptor", None)
-        owner = getattr(interceptor, "_owner", None) if interceptor else None
-        if owner is not None:
-            for _ in range(10):
-                try:
-                    owner.wait(0.2)
-                except Exception:
-                    break
-                try:
-                    data = self._response_collector.get(self.request_id, data_type="response")
-                    if data.has_data:
-                        decoded = self._decode_body_value(data.base64)
-                        if decoded is not None:
-                            return decoded
-                        decoded = self._decode_body_value(data.bytes)
-                        if decoded is not None:
-                            return decoded
-                        return None
-                except Exception:
-                    pass
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            _sleep(min(interval, remaining))
+            interval = min(interval * 1.5, 0.5)  # 指数退避，上限 0.5s
 
         return None
 

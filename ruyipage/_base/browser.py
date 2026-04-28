@@ -1088,8 +1088,6 @@ class Firefox(object):
             self._driver = BrowserBiDiDriver(self._address)
             self._driver.start(ws_url)
             self._create_session()
-            if not self._session_id:
-                return False
             self._subscribe_events()
             self._setup_proxy_auth()
             self._setup_download_behavior()
@@ -1230,13 +1228,37 @@ class Firefox(object):
 
         try:
             # 在 Windows 上使用 CREATE_NO_WINDOW 避免弹出控制台
+            # CREATE_BREAKAWAY_FROM_JOB 使 Firefox 脱离 Python 的 Job Object，
+            # 避免 IDE 调试器停止时连带杀死浏览器进程
             kwargs = {}
             if sys.platform == "win32":
-                kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-
-            self._process = subprocess.Popen(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs
-            )
+                CREATE_NO_WINDOW = 0x08000000
+                CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+                flags = CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
+                try:
+                    self._process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=flags,
+                    )
+                except OSError:
+                    # 某些受限环境不允许 BREAKAWAY_FROM_JOB，回退
+                    self._process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=CREATE_NO_WINDOW,
+                    )
+            else:
+                # Unix/macOS: start_new_session 使 Firefox 脱离 Python 的进程组，
+                # 避免 IDE 调试器停止时连带杀死浏览器进程
+                self._process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
         except FileNotFoundError:
             raise BrowserLaunchError(
                 "找不到 Firefox: {}\n"
@@ -1256,7 +1278,8 @@ class Firefox(object):
         处理各种 Firefox BiDi session 状态：
         1. 无活跃 session → session.new 成功
         2. 当前连接已有 session → session.end + session.new
-        3. 另一个连接已持有 session → 优先接管当前会话，失败时再回退重启
+        3. 另一个连接已持有 session（如调试器强杀后的孤儿 session）
+           → 断开重连让 Firefox 回收孤儿 session，再创建新 session
         """
         # 先检查状态
         try:
@@ -1290,7 +1313,7 @@ class Firefox(object):
             # 尝试 session.end + session.new
             try:
                 bidi_session.end(self._driver)
-                logger.debug("已结果旧会话")
+                logger.debug("已结束旧会话")
             except Exception:
                 pass
 
@@ -1307,22 +1330,94 @@ class Firefox(object):
                 return
             except Exception as e:
                 err_str = str(e).lower()
-                if "maximum" in err_str or "session not created" in err_str:
-                    # Firefox 已存在活跃 BiDi 会话时，优先直接接管当前会话，
-                    # 避免把可复用的浏览器误判成必须重启的孤儿会话。
-                    self._session_id = ""
-                    self._driver.session_id = ""
-                    self._owns_session = False
-                    logger.info("检测到已有 Firefox BiDi 会话，直接接管当前浏览器")
-                    return
-                raise
+                if "maximum" not in err_str and "session not created" not in err_str:
+                    raise
+
+            # session.new 失败，可能是调试器强杀后残留的孤儿 session。
+            # 断开 WebSocket 让 Firefox Remote Agent 回收孤儿 session，
+            # 然后重新连接并创建新 session。
+            logger.debug("检测到可能的孤儿 session，断开重连以触发 Firefox 清理...")
+            self._driver.stop()
+            self._driver = None
+
+            host, port_str = self._address.rsplit(":", 1)
+            for retry in range(6):
+                time.sleep(1)
+                try:
+                    ws_url = get_bidi_ws_url(host, int(port_str), timeout=5)
+                    self._driver = BrowserBiDiDriver(self._address)
+                    self._driver.start(ws_url)
+
+                    # 先尝试 end 再 new
+                    try:
+                        bidi_session.end(self._driver)
+                    except Exception:
+                        pass
+
+                    status = bidi_session.status(self._driver)
+                    if status.get("ready", False):
+                        result = bidi_session.new(
+                            self._driver,
+                            {},
+                            user_prompt_handler=self._options.user_prompt_handler,
+                        )
+                        self._session_id = result.get("sessionId", "")
+                        self._driver.session_id = self._session_id
+                        self._owns_session = True
+                        logger.info(
+                            "孤儿 session 已清理，新会话已创建: %s",
+                            self._session_id,
+                        )
+                        return
+                    else:
+                        # 仍然 not ready，断开再试
+                        logger.debug("重试 %d: session 仍未就绪", retry + 1)
+                        self._driver.stop()
+                        self._driver = None
+                except Exception as ex:
+                    logger.debug("重连重试 %d 失败: %s", retry + 1, ex)
+                    if self._driver:
+                        try:
+                            self._driver.stop()
+                        except Exception:
+                            with BrowserBiDiDriver._lock:
+                                BrowserBiDiDriver._BROWSERS.pop(self._address, None)
+                        self._driver = None
+
+            # 最后的兜底：发送 browser.close 让 Firefox 重启自身，
+            # 清理不可回收的孤儿 session
+            logger.warning(
+                "无法回收孤儿 session，尝试通过 browser.close 重置 Firefox..."
+            )
+            try:
+                ws_url = get_bidi_ws_url(host, int(port_str), timeout=5)
+                self._driver = BrowserBiDiDriver(self._address)
+                self._driver.start(ws_url)
+                self._driver.run("browser.close", timeout=3)
+            except Exception:
+                pass
+            finally:
+                if self._driver:
+                    try:
+                        self._driver.stop()
+                    except Exception:
+                        with BrowserBiDiDriver._lock:
+                            BrowserBiDiDriver._BROWSERS.pop(self._address, None)
+                    self._driver = None
+
+            raise BrowserConnectError(
+                "检测到 Firefox 残留的孤儿会话（通常由调试器强制停止导致），"
+                "已尝试重置浏览器。请稍等几秒后重试连接，"
+                "或手动重启浏览器的远程调试端口。\n"
+                "提示：正常停止调试（而非强制终止）可避免此问题。"
+            )
 
     def _subscribe_events(self):
         """订阅关键事件
 
         包括导航相关的 navigationStarted 和 navigationFailed 事件。
         """
-        if not self._driver or not self._session_id:
+        if not self._driver:
             return
 
         try:

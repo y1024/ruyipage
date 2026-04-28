@@ -31,3 +31,6 @@ class Settings(object):
 
     # 脚本执行默认超时（秒）
     script_timeout = 30
+
+    # 响应体读取默认超时（秒）
+    response_body_timeout = 10

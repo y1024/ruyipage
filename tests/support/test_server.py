@@ -3,9 +3,10 @@
 
 import base64
 import json
+import time as _time
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 from ruyipage._functions.tools import find_free_port
 
@@ -105,6 +106,26 @@ class TestServer(object):
                         },
                         headers=self._cors_headers(),
                     )
+                    return
+
+                if path == "/api/slow":
+                    query = parse_qs(parsed.query)
+                    delay = float(query.get("delay", ["2"])[0])
+                    payload = json.dumps(
+                        {"status": "ok", "delayed": delay}, ensure_ascii=False
+                    ).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(payload)))
+                    for name, value in self._cors_headers():
+                        self.send_header(name, value)
+                    self.end_headers()
+                    self.wfile.flush()
+                    # 先发送 header 再延迟发送 body，
+                    # 模拟响应体传输缓慢的场景
+                    _time.sleep(delay)
+                    self.wfile.write(payload)
+                    self.wfile.flush()
                     return
 
                 if path == "/api/error":
