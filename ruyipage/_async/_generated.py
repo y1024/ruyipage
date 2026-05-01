@@ -233,6 +233,12 @@ class AsyncFirefoxBase(AsyncFirefoxBaseMixin):
         return self._unit_cache["touch"]
 
     @property
+    def trace(self):
+        if "trace" not in self._unit_cache:
+            self._unit_cache["trace"] = AsyncUnitProxy(self._sync.trace)
+        return self._unit_cache["trace"]
+
+    @property
     def wait(self):
         if "wait" not in self._unit_cache:
             self._unit_cache["wait"] = AsyncUnitProxy(self._sync.wait)

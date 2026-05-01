@@ -553,6 +553,7 @@ class InterceptedRequest(object):
 
         deadline = time.monotonic() + timeout
         interval = 0.1  # 起步短间隔，快速响应已就绪的数据
+        last_error = None
 
         while True:
             try:
@@ -564,15 +565,19 @@ class InterceptedRequest(object):
                     decoded = self._decode_body_value(data.bytes)
                     if decoded is not None:
                         return decoded
-                    return None
-            except Exception:
-                pass
+                    # base64/bytes 都存在但 value 缺失；
+                    # 可能是数据尚未完全落盘，继续轮询而不是立即放弃。
+                last_error = None
+            except Exception as exc:
+                last_error = exc
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             _sleep(min(interval, remaining))
             interval = min(interval * 1.5, 0.5)  # 指数退避，上限 0.5s
 
+        if last_error is not None:
+            logger.debug("get_response_body 超时，最后异常: %s", last_error)
         return None
 
     # ------------------------------------------------------------------
@@ -1369,11 +1374,24 @@ class Interceptor(object):
             response_collector=self._response_collector,
         )
         req._interceptor = self
+
+        # trace: 记录请求拦截
+        _tracer = getattr(self._owner._driver._browser_driver, '_tracer', None)
+        if _tracer and _tracer.enabled:
+            _tracer.record("net_intercept", "beforeRequestSent",
+                           {"url": (req.url or "")[:200], "method": req.method},
+                           context_id=getattr(self._owner, '_context_id', None))
+
         if self._handler:
             try:
                 self._handler(req)
             except Exception as e:
                 logger.warning("拦截回调异常: %s", e)
+                if _tracer and _tracer.enabled:
+                    _tracer.record("error", "intercept_handler",
+                                   {"error": str(e)[:200], "url": (req.url or "")[:200]},
+                                   context_id=getattr(self._owner, '_context_id', None),
+                                   status="error")
             if not req.handled:
                 req.continue_request()
         else:
@@ -1391,6 +1409,14 @@ class Interceptor(object):
             response_collector=self._response_collector,
         )
         req._interceptor = self
+
+        # trace: 记录响应拦截
+        _tracer = getattr(self._owner._driver._browser_driver, '_tracer', None)
+        if _tracer and _tracer.enabled:
+            _tracer.record("net_intercept", "responseStarted",
+                           {"url": (req.url or "")[:200], "method": req.method},
+                           context_id=getattr(self._owner, '_context_id', None))
+
         if self._handler:
             # responseStarted 场景里，用户回调很容易在 continue_response() 后
             # 继续同步读取 req.response_body。该属性会等待 responseCompleted，
@@ -1400,13 +1426,18 @@ class Interceptor(object):
             # 这里改为独立短线程执行用户回调：
             # 1. 不阻塞 BrowserBiDiDriver 的事件消费线程
             # 2. 允许 responseCompleted 事件及时到达 DataCollector
-            # 3. 仍保留“未处理则自动 continue_response()”的兜底语义
+            # 3. 仍保留"未处理则自动 continue_response()"的兜底语义
 
             def _run_handler():
                 try:
                     self._handler(req)
                 except Exception as e:
                     logger.warning("响应拦截回调异常: %s", e)
+                    if _tracer and _tracer.enabled:
+                        _tracer.record("error", "response_intercept_handler",
+                                       {"error": str(e)[:200], "url": (req.url or "")[:200]},
+                                       context_id=getattr(self._owner, '_context_id', None),
+                                       status="error")
                 if not req.handled:
                     req.continue_response()
 
@@ -1430,11 +1461,24 @@ class Interceptor(object):
             response_collector=self._response_collector,
         )
         req._interceptor = self
+
+        # trace: 记录认证拦截
+        _tracer = getattr(self._owner._driver._browser_driver, '_tracer', None)
+        if _tracer and _tracer.enabled:
+            _tracer.record("net_intercept", "authRequired",
+                           {"url": (req.url or "")[:200]},
+                           context_id=getattr(self._owner, '_context_id', None))
+
         if self._handler:
             try:
                 self._handler(req)
             except Exception as e:
                 logger.warning("认证拦截回调异常: %s", e)
+                if _tracer and _tracer.enabled:
+                    _tracer.record("error", "auth_intercept_handler",
+                                   {"error": str(e)[:200]},
+                                   context_id=getattr(self._owner, '_context_id', None),
+                                   status="error")
             if not req.handled:
                 bidi_network.continue_with_auth(
                     self._owner._driver._browser_driver,

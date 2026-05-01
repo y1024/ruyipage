@@ -34,3 +34,20 @@ class Settings(object):
 
     # 响应体读取默认超时（秒）
     response_body_timeout = 10
+
+    # ── 诊断与追踪 ──
+
+    # 是否启用 debug trace 记录（默认关闭，零开销）
+    trace_enabled = False
+
+    # trace 缓冲区最大条目数
+    trace_max_entries = 1000
+
+    # 是否在操作失败时自动收集诊断快照（默认关闭）
+    failure_snapshot_enabled = False
+
+    # 诊断快照中 DOM HTML 最大字节数（超出则截断）
+    snapshot_dom_max_bytes = 2 * 1024 * 1024  # 2MB
+
+    # 诊断快照中包含的最近网络请求数
+    snapshot_recent_requests = 30

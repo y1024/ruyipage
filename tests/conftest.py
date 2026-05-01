@@ -65,6 +65,10 @@ def page(opts_factory):
     page.get("about:blank")
     yield page
     try:
+        page.trace.clear()
+    except Exception:
+        pass
+    try:
         page.intercept.stop()
     except Exception:
         pass

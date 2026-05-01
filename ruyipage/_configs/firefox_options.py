@@ -63,6 +63,9 @@ class FirefoxOptions(object):
         self._xpath_picker_enabled = False  # 页面 XPath 选择浮窗
         self._action_visual_enabled = False  # 鼠标行为可视化调试
         self._human_algorithm = "bezier"  # 拟人鼠标轨迹算法
+        self._trace_enabled = False  # debug trace 记录
+        self._failure_snapshot_enabled = False  # 失败自动诊断快照
+        self._snapshot_dir = None  # 诊断快照保存目录
 
     # ===== 属性读取 =====
 
@@ -168,6 +171,21 @@ class FirefoxOptions(object):
     def human_algorithm(self):
         """默认拟人鼠标轨迹算法。"""
         return self._human_algorithm
+
+    @property
+    def trace_enabled(self):
+        """是否启用 debug trace 记录。"""
+        return self._trace_enabled
+
+    @property
+    def failure_snapshot_enabled(self):
+        """是否启用失败自动诊断快照。"""
+        return self._failure_snapshot_enabled
+
+    @property
+    def snapshot_dir(self):
+        """诊断快照保存目录。"""
+        return self._snapshot_dir
 
     # ===== 链式设置方法 =====
 
@@ -540,6 +558,62 @@ class FirefoxOptions(object):
         self._human_algorithm = value
         return self
 
+    def enable_trace(self, on_off=True):
+        """启用 debug trace 记录。
+
+        开启后，所有 BiDi 命令、事件、网络活动将记录到内存环形缓冲区，
+        可通过 ``page.trace.summary()`` 或 ``page.trace.dump_json()`` 查看。
+
+        Args:
+            on_off: ``True`` 启用，``False`` 关闭。默认关闭。
+
+        Returns:
+            self
+
+        说明：
+            - 关闭状态下零开销（仅一次属性检查 ~10ns/命令）。
+            - 缓冲区大小通过 ``Settings.trace_max_entries`` 控制（默认 1000）。
+        """
+        self._trace_enabled = bool(on_off)
+        return self
+
+    def enable_failure_snapshot(self, on_off=True):
+        """启用自动化失败时的诊断快照。
+
+        开启后，元素查找失败、页面加载超时、JS 异常等操作失败时，
+        框架自动收集截图、DOM、URL 和最近网络请求记录，
+        并附加到异常对象的 ``.diagnostics`` 属性上。
+
+        Args:
+            on_off: ``True`` 启用，``False`` 关闭。默认关闭。
+
+        Returns:
+            self
+
+        说明：
+            - 配合 ``set_snapshot_dir()`` 可自动保存快照文件到磁盘。
+            - 收集过程每步独立容错，某步失败不影响其他信息的收集。
+        """
+        self._failure_snapshot_enabled = bool(on_off)
+        return self
+
+    def set_snapshot_dir(self, path):
+        """设置诊断快照的保存目录。
+
+        当自动化失败且 ``enable_failure_snapshot(True)`` 时，
+        截图、DOM、trace 等文件将保存到此目录。
+
+        Args:
+            path: 目录路径，如 ``'./ruyipage_snapshots'``。
+                传入 None 则不保存文件（仅附加到异常对象）。
+
+        Returns:
+            self
+        """
+        import os
+        self._snapshot_dir = os.path.abspath(path) if path else None
+        return self
+
     def _get_proxy_auth_credentials(self):
         """从 fpfile 中读取代理认证用户名密码。"""
         auth = self._read_httpauth_from_fpfile(self._fpfile)
@@ -621,6 +695,9 @@ class FirefoxOptions(object):
         timeout_base=10,
         timeout_page_load=30,
         timeout_script=30,
+        trace=False,
+        failure_snapshot=False,
+        snapshot_dir=None,
     ):
         """小白友好的一键启动预设。
 
@@ -644,6 +721,9 @@ class FirefoxOptions(object):
             timeout_base: 基础超时
             timeout_page_load: 页面加载超时
             timeout_script: 脚本执行超时
+            trace: 是否启用 debug trace 记录
+            failure_snapshot: 是否启用失败自动诊断快照
+            snapshot_dir: 诊断快照保存目录
 
         Returns:
             self
@@ -674,6 +754,10 @@ class FirefoxOptions(object):
             page_load=timeout_page_load,
             script=timeout_script,
         )
+        self.enable_trace(trace)
+        self.enable_failure_snapshot(failure_snapshot)
+        if snapshot_dir:
+            self.set_snapshot_dir(snapshot_dir)
         return self
 
     def build_command(self):

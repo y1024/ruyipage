@@ -51,6 +51,7 @@ from ._units.script_tools import (
     ScriptResult,
     PreloadScript,
 )
+from ._units.tracer import FailureSnapshot, TraceEntry
 from .errors import (
     RuyiPageError,
     ElementNotFoundError,
@@ -182,6 +183,9 @@ def launch(
     timeout_base=10,
     timeout_page_load=30,
     timeout_script=30,
+    trace=False,
+    failure_snapshot=False,
+    snapshot_dir=None,
 ):
     """快速启动 FirefoxPage（小白友好入口）。
 
@@ -202,6 +206,9 @@ def launch(
         timeout_base: 基础超时
         timeout_page_load: 页面加载超时
         timeout_script: 脚本执行超时
+        trace: 是否启用 debug trace 记录
+        failure_snapshot: 是否启用失败自动诊断快照
+        snapshot_dir: 诊断快照保存目录
 
     Returns:
         FirefoxPage
@@ -222,6 +229,9 @@ def launch(
         timeout_base=timeout_base,
         timeout_page_load=timeout_page_load,
         timeout_script=timeout_script,
+        trace=trace,
+        failure_snapshot=failure_snapshot,
+        snapshot_dir=snapshot_dir,
     )
     if browser_path:
         opts.set_browser_path(browser_path)
@@ -487,6 +497,8 @@ __all__ = [
     "ScriptRemoteValue",
     "ScriptResult",
     "PreloadScript",
+    "FailureSnapshot",
+    "TraceEntry",
     # 异常
     "RuyiPageError",
     "ElementNotFoundError",

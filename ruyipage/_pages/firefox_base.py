@@ -97,6 +97,7 @@ class FirefoxBase(BasePage):
         self._last_prompt_closed = None
         self._prompt_subscription_id = None
         self._prompt_handler_config = None
+        self._snapshot_in_progress = False  # 诊断快照可重入保护
 
     def _init_context(self, browser, context_id):
         """初始化上下文连接
@@ -111,6 +112,8 @@ class FirefoxBase(BasePage):
         self._load_mode = browser.options.load_mode
         self._maybe_enable_xpath_picker()
         self._maybe_enable_action_visual()
+        self._maybe_enable_trace()
+        self._maybe_enable_failure_snapshot()
 
     def _maybe_enable_xpath_picker(self):
         """按启动配置自动启用 XPath picker。"""
@@ -186,6 +189,20 @@ class FirefoxBase(BasePage):
             self.run_js(f"({self._get_action_visual_script()})()", as_expr=True)
         except Exception as e:
             logger.debug("鼠标行为可视化重新注入失败: %s", e)
+
+    def _maybe_enable_trace(self):
+        """按启动配置自动启用 debug trace。"""
+        options = getattr(self._browser, "options", None)
+        if options and getattr(options, "trace_enabled", False):
+            Settings.trace_enabled = True
+            # 触发 tracer 实例的延迟创建，确保 run() 中 _tracer 判断生效
+            _ = self._driver._browser_driver.tracer
+
+    def _maybe_enable_failure_snapshot(self):
+        """按启动配置自动启用失败诊断快照。"""
+        options = getattr(self._browser, "options", None)
+        if options and getattr(options, "failure_snapshot_enabled", False):
+            Settings.failure_snapshot_enabled = True
 
     @staticmethod
     def _get_action_visual_script():
@@ -3436,6 +3453,26 @@ class FirefoxBase(BasePage):
         return self._interceptor
 
     @property
+    def trace(self) -> "Tracer":
+        """调试追踪管理器（browser 级共享）。
+
+        记录 BiDi 命令、事件和网络活动的结构化时间线。
+        需先启用: ``Settings.trace_enabled = True`` 或
+        ``opts.enable_trace(True)``。
+
+        Returns:
+            Tracer: 追踪管理器。提供 summary(), dump_json(), latest(n) 等方法。
+
+        Examples::
+
+            Settings.trace_enabled = True
+            page.get('https://example.com')
+            print(page.trace.summary())   # 人类可读摘要
+            print(page.trace.dump_json()) # JSON 完整输出
+        """
+        return self._driver._browser_driver.tracer
+
+    @property
     def network(self) -> "NetworkManager":
         """network 模块高层管理器。
 
@@ -3635,8 +3672,14 @@ class FirefoxBase(BasePage):
                     logger.debug("导航被页面主动中断（通常是自动刷新/跳转）: %s", e)
                 elif "timeout" in str(e.error).lower():
                     logger.warning("导航超时: %s -> %s (%s)", url, e.bidi_message, e.error)
+                    snap = self._capture_failure_snapshot(e)
+                    if snap and snap.saved_dir:
+                        logger.debug("导航超时快照: %s", snap.saved_dir)
                 else:
                     logger.warning("导航错误: %s", e)
+                    snap = self._capture_failure_snapshot(e)
+                    if snap and snap.saved_dir:
+                        logger.debug("导航错误快照: %s", snap.saved_dir)
 
             if wait != "none":
                 self.wait_loading(timeout=nav_timeout)
@@ -3745,7 +3788,9 @@ class FirefoxBase(BasePage):
                 return self
             _sleep(0.1)
 
-        raise WaitTimeoutError("等待页面加载超时 ({}s)".format(timeout))
+        err = WaitTimeoutError("等待页面加载超时 ({}s)".format(timeout))
+        err.diagnostics = self._capture_failure_snapshot(err)
+        raise err
 
     # ===== 元素查找 =====
 
@@ -3881,7 +3926,18 @@ class FirefoxBase(BasePage):
             _sleep(0.3)
 
         if raise_err:
-            raise ElementNotFoundError("未找到元素: {}".format(locator))
+            err = ElementNotFoundError("未找到元素: {}".format(locator))
+            err.diagnostics = self._capture_failure_snapshot(err)
+            raise err
+
+        # 未找到但不抛异常时，记录到 trace（warn 级别）
+        _tracer = getattr(
+            getattr(self._driver, '_browser_driver', None), '_tracer', None)
+        if _tracer and _tracer.enabled:
+            _tracer.record(
+                "error", "element_not_found",
+                {"locator": str(locator)[:200]},
+                context_id=self._context_id, status="warn")
 
         from .._elements.none_element import NoneElement
 
@@ -4224,7 +4280,9 @@ class FirefoxBase(BasePage):
         if result.get("type") == "exception":
             details = result.get("exceptionDetails", {})
             text = details.get("text", str(result))
-            raise JavaScriptError(text, details)
+            err = JavaScriptError(text, details)
+            err.diagnostics = self._capture_failure_snapshot(err)
+            raise err
 
         # 解析返回值
         return parse_value(result.get("result", {}))
@@ -4444,6 +4502,134 @@ class FirefoxBase(BasePage):
             bidi_storage.delete_cookies(
                 self._driver._browser_driver, filter_=filter_ or None
             )
+
+    # ===== 诊断快照 =====
+
+    def _capture_failure_snapshot(self, error):
+        """内部方法：收集自动化失败时的诊断快照。
+
+        每步独立 try/except，某步失败不影响其他收集。
+        先收集内存数据（零失败风险），最后才尝试 BiDi 调用。
+
+        Args:
+            error: 触发诊断的异常对象
+
+        Returns:
+            FailureSnapshot 或 None（功能未启用或正在进行中时返回 None）
+        """
+        if not Settings.failure_snapshot_enabled:
+            return None
+        # 可重入保护：防止诊断收集中的 BiDi 调用再次失败触发递归
+        if self._snapshot_in_progress:
+            return None
+        self._snapshot_in_progress = True
+
+        from .._units.tracer import FailureSnapshot
+
+        snap = FailureSnapshot()
+        snap.error_type = type(error).__name__
+        snap.error_message = str(error)[:500]
+        snap.context_id = self._context_id
+
+        try:
+            # 步骤 1: 内存数据（零失败风险）
+            try:
+                tracer = self._driver._browser_driver.tracer
+                snap.trace_entries = tracer.latest(50)
+                snap.recent_requests = tracer.recent_requests(
+                    Settings.snapshot_recent_requests)
+            except Exception as exc:
+                snap.capture_errors.append('trace: {}'.format(exc))
+
+            # 步骤 2: BiDi 调用（可能失败）
+            # 先检查连接是否存活
+            if not getattr(self._driver, 'is_running', False):
+                snap.capture_errors.append(
+                    'driver not running, skipping BiDi calls')
+                return snap
+
+            # 2a: URL
+            try:
+                snap.url = self.run_js("location.href") or ""
+            except Exception as exc:
+                snap.url = '<unavailable>'
+                snap.capture_errors.append('url: {}'.format(exc))
+
+            # 2b: Screenshot
+            snap_bytes = None
+            try:
+                snap_bytes = self.screenshot(as_bytes=True)
+            except Exception as exc:
+                snap.capture_errors.append('screenshot: {}'.format(exc))
+
+            # 2c: DOM HTML（截断到 Settings.snapshot_dom_max_bytes）
+            dom_html = None
+            try:
+                raw = self.run_js(
+                    "document.documentElement.outerHTML") or ""
+                max_b = Settings.snapshot_dom_max_bytes
+                if len(raw) > max_b:
+                    dom_html = raw[:max_b] + '\n<!-- truncated -->\n'
+                else:
+                    dom_html = raw
+            except Exception as exc:
+                snap.capture_errors.append('dom: {}'.format(exc))
+
+            # 步骤 3: 文件保存
+            snap_dir = getattr(
+                getattr(self._browser, 'options', None),
+                'snapshot_dir', None
+            )
+            if snap_dir and (snap_bytes or dom_html):
+                try:
+                    self._save_snapshot_files(
+                        snap, snap_dir, snap_bytes, dom_html)
+                except Exception as exc:
+                    snap.capture_errors.append('save: {}'.format(exc))
+
+        finally:
+            self._snapshot_in_progress = False
+
+        return snap
+
+    @staticmethod
+    def _save_snapshot_files(snap, base_dir, screenshot_bytes, dom_html):
+        """保存诊断快照文件到磁盘。
+
+        Args:
+            snap: FailureSnapshot 对象
+            base_dir: 保存根目录
+            screenshot_bytes: 截图 bytes 或 None
+            dom_html: DOM HTML 字符串或 None
+        """
+        import os
+        import json as _json
+
+        ts = time.strftime('%Y%m%d_%H%M%S')
+        err_name = snap.error_type[:50]
+        ctx_short = (snap.context_id or 'unknown')[:8]
+        folder_name = '{}_{}_{}'.format(ts, err_name, ctx_short)
+        folder = os.path.join(base_dir, folder_name)
+        os.makedirs(folder, exist_ok=True)
+        snap.saved_dir = folder
+
+        if screenshot_bytes:
+            path = os.path.join(folder, 'screenshot.png')
+            with open(path, 'wb') as f:
+                f.write(screenshot_bytes)
+            snap.screenshot_path = path
+
+        if dom_html:
+            path = os.path.join(folder, 'dom.html')
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(dom_html)
+            snap.dom_path = path
+
+        # context.json — 结构化诊断信息
+        ctx_path = os.path.join(folder, 'context.json')
+        with open(ctx_path, 'w', encoding='utf-8') as f:
+            _json.dump(snap.to_dict(), f, ensure_ascii=False,
+                       indent=2, default=str)
 
     # ===== 截图 / PDF =====
 

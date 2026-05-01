@@ -12,6 +12,7 @@
 """
 
 import json
+import time
 import threading
 import logging
 
@@ -87,12 +88,23 @@ class BrowserBiDiDriver(object):
         self.session_id = None
         self.alert_flag = False
 
+        # trace 诊断（延迟创建）
+        self._tracer = None
+
         # 异步支持（可选，由 switch_to_async() 设置）
         self._mode = "sync"  # "sync" | "async"
 
     @property
     def is_running(self):
         return self._is_running
+
+    @property
+    def tracer(self):
+        """获取或创建 Tracer 实例（browser 级单例）"""
+        if self._tracer is None:
+            from .._units.tracer import Tracer
+            self._tracer = Tracer()
+        return self._tracer
 
     def start(self, ws_url=None):
         """连接 WebSocket 并启动后台线程
@@ -258,7 +270,9 @@ class BrowserBiDiDriver(object):
         ):
             return self._run_in_greenlet(method, params, timeout)
 
-        # ── 同步路径（原有逻辑，一字不改）──
+        # ── 同步路径 ──
+        _t0 = time.monotonic()
+        _ctx = (params or {}).get("context")
 
         # 生成唯一 ID
         with self._id_lock:
@@ -279,6 +293,11 @@ class BrowserBiDiDriver(object):
         except Exception as e:
             with self._results_lock:
                 self._method_results.pop(cmd_id, None)
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "send_failed"},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
             raise PageDisconnectedError("发送消息失败: {}".format(e))
 
         # 阻塞等待响应
@@ -287,9 +306,19 @@ class BrowserBiDiDriver(object):
         except Empty:
             with self._results_lock:
                 self._method_results.pop(cmd_id, None)
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "timeout", "timeout": timeout},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="timeout")
             raise BiDiError("timeout", "命令超时: {} ({}s)".format(method, timeout))
 
         if result is None:
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "disconnected"},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
             raise PageDisconnectedError("连接已断开")
 
         with self._results_lock:
@@ -297,12 +326,25 @@ class BrowserBiDiDriver(object):
 
         # 处理错误响应
         if result.get("type") == "error":
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method,
+                    {"error": result.get("error", ""), "msg": result.get("message", "")[:200]},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
             raise BiDiError(
                 result.get("error", "unknown error"),
                 result.get("message", ""),
                 result.get("stacktrace", ""),
             )
 
+        # 成功
+        _elapsed = (time.monotonic() - _t0) * 1000
+        if self._tracer and self._tracer.enabled:
+            from .._units.tracer import _summarize_params
+            self._tracer.record(
+                "bidi_cmd", method, _summarize_params(params),
+                context_id=_ctx, elapsed_ms=_elapsed)
         return result.get("result", {})
 
     def set_callback(self, event, callback, context=None, immediate=False):
@@ -341,6 +383,9 @@ class BrowserBiDiDriver(object):
         """
         import asyncio
 
+        _t0 = time.monotonic()
+        _ctx = (params or {}).get("context")
+
         # 生成唯一 ID（锁在 executor 中持有，不阻塞事件循环 — 极短操作）
         with self._id_lock:
             self._cur_id += 1
@@ -365,6 +410,11 @@ class BrowserBiDiDriver(object):
         except Exception as e:
             with self._results_lock:
                 self._method_results.pop(cmd_id, None)
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "send_failed"},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
             raise PageDisconnectedError("发送消息失败: {}".format(e))
 
         # 异步等待响应 — 通过 executor 运行 Queue.get() 避免阻塞事件循环
@@ -385,9 +435,19 @@ class BrowserBiDiDriver(object):
         except Empty:
             with self._results_lock:
                 self._method_results.pop(cmd_id, None)
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "timeout", "timeout": timeout},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="timeout")
             raise BiDiError("timeout", "命令超时: {} ({}s)".format(method, timeout))
 
         if result is None:
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "disconnected"},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
             raise PageDisconnectedError("连接已断开")
 
         with self._results_lock:
@@ -395,12 +455,24 @@ class BrowserBiDiDriver(object):
 
         # 处理错误响应
         if result.get("type") == "error":
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method,
+                    {"error": result.get("error", ""), "msg": result.get("message", "")[:200]},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
             raise BiDiError(
                 result.get("error", "unknown error"),
                 result.get("message", ""),
                 result.get("stacktrace", ""),
             )
 
+        _elapsed = (time.monotonic() - _t0) * 1000
+        if self._tracer and self._tracer.enabled:
+            from .._units.tracer import _summarize_params
+            self._tracer.record(
+                "bidi_cmd", method, _summarize_params(params),
+                context_id=_ctx, elapsed_ms=_elapsed)
         return result.get("result", {})
 
     def _sync_send(self, raw):
@@ -451,6 +523,29 @@ class BrowserBiDiDriver(object):
                         event_context,
                         msg_type,
                     )
+
+                    # ── 被动 trace / 网络观察钩子 ──
+                    # 不使用 set_callback，与 page.listen / page.intercept 零冲突
+                    if self._tracer:
+                        _t = self._tracer
+                        if _t.enabled:
+                            _t.record("bidi_event", event_method,
+                                      {"context": event_context},
+                                      context_id=event_context)
+                        # 网络事件被动记录（始终记录，不依赖 trace_enabled）
+                        if event_method in (
+                            "network.responseCompleted",
+                            "network.fetchError",
+                        ):
+                            _req = event_params.get("request", {})
+                            _resp = event_params.get("response", {})
+                            _t.record_net(
+                                event_method.split(".")[-1],
+                                _req.get("url", ""),
+                                _req.get("method", ""),
+                                _resp.get("status", 0),
+                                context_id=event_context,
+                            )
 
                     # alert_flag 处理
                     if event_method == "browsingContext.userPromptOpened":

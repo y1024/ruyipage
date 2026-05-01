@@ -4,7 +4,7 @@
 
 class RuyiPageError(Exception):
     """RuyiPage 基础异常"""
-    pass
+    diagnostics = None  # FailureSnapshot | None，由框架在 raise 前注入
 
 
 class ElementNotFoundError(RuyiPageError):
