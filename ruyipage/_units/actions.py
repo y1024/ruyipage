@@ -82,7 +82,8 @@ class Actions(object):
                         - FirefoxElement: 移动到元素中心
                         - dict {'x': int, 'y': int}: 移动到指定坐标
                         - tuple/list (x, y): 移动到指定坐标
-                        - None: 使用当前鼠标位置
+                        - None: 仅传 offset 时按视口绝对坐标 (offset_x, offset_y)；
+                                offset 也为 0 时保持当前鼠标位置不动。
             offset_x:   在目标位置基础上的 X 偏移量 (像素)。默认 0。
             offset_y:   在目标位置基础上的 Y 偏移量 (像素)。默认 0。
             duration:   移动动画时长 (毫秒)。默认 100。
@@ -92,7 +93,12 @@ class Actions(object):
         Returns:
             self: 支持链式调用。
         """
-        x, y = self._resolve_position(ele_or_loc)
+        # 不传 ele_or_loc 但显式给了 offset 时，按视口绝对坐标处理，
+        # 避免 "offset 累加到上一次指针位置" 造成的越界 / 错位 bug。
+        if ele_or_loc is None and (offset_x or offset_y):
+            x, y = 0, 0
+        else:
+            x, y = self._resolve_position(ele_or_loc)
         x += offset_x
         y += offset_y
         action = {"type": "pointerMove", "x": int(x), "y": int(y), "duration": duration}
@@ -481,16 +487,17 @@ class Actions(object):
                 {"type": "wheel", "id": "wheel0", "actions": self._wheel_actions[:]}
             )
 
-        if actions:
-            self._owner._driver._browser_driver.run(
-                "input.performActions",
-                {"context": self._owner._context_id, "actions": actions},
-            )
-
-        # 清空动作队列
-        self._pointer_actions.clear()
-        self._key_actions.clear()
-        self._wheel_actions.clear()
+        try:
+            if actions:
+                self._owner._driver._browser_driver.run(
+                    "input.performActions",
+                    {"context": self._owner._context_id, "actions": actions},
+                )
+        finally:
+            # 无论成功或失败都清空队列，避免残留动作污染下一次 perform()
+            self._pointer_actions.clear()
+            self._key_actions.clear()
+            self._wheel_actions.clear()
 
         # 可视化渲染（执行后注入）
         self._send_visual_data(pointer_copy, key_copy)
