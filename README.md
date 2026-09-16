@@ -2122,12 +2122,18 @@ page.get("https://browserleaks.com/webgl")
 ### 流水线说明
 
 1. `build_proxies_dict(...)` — 组装 `requests` 风格的 proxies。
-2. `fetch_geo_info(...)` — 10 数据源回退；`require_country` 不匹配立即抛
-   `CountryMismatchError`。
+2. `fetch_geo_info(...)` — 10 数据源回退。`require_country` 不匹配时不会
+   因为单个数据源就判死：各家 geo 库对同一 IP 时有分歧，个别源还只能报
+   ASN 注册国，所以要有**两个源给出同一个错误国家**才抛
+   `CountryMismatchError`；只有一个源有异议时继续问下一个源。
 3. `fetch_public_ipv6(...)` — best-effort，仅富化出口诊断信息；不会自动把代理
    Geo IP 写成 WebRTC ICE 地址。
 4. 自动生成 / 复用 `userdir`，写入符合内核字段顺序的 `fpfile.txt`；不再写入
-   `width` / `height`。
+   `width` / `height`。配置了代理时同时写入 `webrtc.ice_proxy_only:true`，
+   把 ICE 钉在代理上，避免 srflx candidate 单独暴露真实出口 IP。
+   内核支持、但本流水线不覆盖的字段（`touch.maxTouchPoints`、
+   `fonts.whitelist`、`screen.devicePixelRatio`、`media.devices`、
+   其余 `webgl.*` / `webgl2.*`、`webgpu.*` 等）可通过 `extra={...}` 追加。
 5. 默认向 Options 加入 `about:blank` 启动页，使页面创建后可立即应用 BiDi
    覆盖且不需要 `remote-allow-system-access`；已有自定义启动页时传
    `set_startup_page_on_opts=False`。`set_window_size_on_opts` 仅为兼容保留且已忽略；智能指纹不会把
@@ -2146,12 +2152,21 @@ page.get("https://browserleaks.com/webgl")
 ### 内置数据资产
 
 - 22 套 Windows 真机硬件特征（NVIDIA RTX 系 + AMD RX 系 + Intel UHD/Arc）。
+  传 `profile_id="win-rtx3060"` 可钉选其中一套（`list_hardware_profiles()`
+  枚举全部 id）；不传则随机抽取。
+- WebGL 共 53 个字段一次写全，不留回落到真实显卡的缺口。取值来自真机
+  ANGLE/D3D11 实测：`webgl.vendor` 为 `Mozilla`，`webgl.renderer` 与
+  `webgl.unmasked_renderer` 同为 `ANGLE (...), or similar`（这是上游
+  Firefox 的真实形状，不是占位符），版本串为 `WebGL 1.0` /
+  `WebGL GLSL ES 1.0`。各项上限、扩展表和 shader 精度都是 ANGLE/D3D11
+  常量，只有 `webgl.unmasked_*` 随机型变化。
 - 30+ 国语言 / Accept-Language / 微软语音映射，含 `_default` 兜底。
 - UA 优先使用 `opts.browser_path` 对应 Firefox 的实际主版本；可执行文件无法查询时
   才回退到内置基准版本，且不再随机抖动主版本。
-- WebRTC 默认保持 Firefox 原生 ICE，仅在调用方提供真实 ICE 地址时写入显式覆盖。
-  原生 srflx 地址可能不同于 HTTP 代理出口；`local_webrtc_*` 也不会筛除所有其他
-  host candidate。
+- WebRTC：配置代理时默认写入 `webrtc.ice_proxy_only:true`，srflx candidate 随之
+  消失；传 `webrtc_ice_proxy_only=False` 可退回原生 ICE，但此时原生 srflx 地址
+  可能不同于代理出口。`local/public_webrtc_*` 仍只在调用方提供真实地址时写入，
+  且不会筛除所有其他 host candidate。
 
 ### 异常体系
 

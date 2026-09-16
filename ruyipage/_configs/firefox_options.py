@@ -951,7 +951,8 @@ class FirefoxOptions(object):
         1. 出口 IP / 地理位置探测（10 个数据源回退，可选 IPv6 富化）；
         2. 国家校验（``require_country`` 不匹配直接抛 ``CountryMismatchError``）；
         3. 随机抽取硬件指纹 + 按浏览器实际主版本拼装 UA + 独立 Canvas/Audio 种子；
-        4. 写入符合内核 ``key:value`` 字段顺序的 ``fpfile.txt``；
+        4. 写入符合内核 ``key:value`` 字段顺序的 ``fpfile.txt``；配了代理时
+           同时写入 ``webrtc.ice_proxy_only:true``，把 ICE 钉在代理上；
         5. 配置当前 ``FirefoxOptions`` 的 proxy / userdir / fpfile，并默认加入
            可直接执行 BiDi 覆盖的 ``about:blank`` 启动页；
            ``set_window_size_on_opts`` 仅为兼容保留且已忽略。
@@ -960,7 +961,12 @@ class FirefoxOptions(object):
         所有关键字参数透传到 :func:`ruyipage.apply_smart_fingerprint`，常用
         参数包括 ``proxy_host`` / ``proxy_port`` / ``proxy_user`` / ``proxy_pwd``
         / ``require_country`` / ``manual_geo`` / ``base_dir`` /
-        ``set_startup_page_on_opts`` / ``logger`` 等。
+        ``set_startup_page_on_opts`` / ``webrtc_ice_proxy_only`` / ``extra``
+        / ``logger`` 等。
+        内核支持、但智能指纹不覆盖的字段（``touch.maxTouchPoints``、
+        ``fonts.whitelist``、``width`` / ``height``、``screen.devicePixelRatio``、
+        ``media.devices``、其余 ``webgl.*`` / ``webgl2.*``、``webgpu.*``）
+        通过 ``extra={...}`` 追加到 fpfile 末尾。
         当 10 个在线 Geo 数据源全部失败时，可通过 ``manual_geo`` 显式指定
         ``ip`` / ``country_code`` / ``timezone`` / ``latitude`` / ``longitude``
         继续生成指纹；如果在线 Geo 成功，优先使用在线结果。

@@ -571,7 +571,6 @@ def test_write_fpfile_schema(tmp_path):
 
     # The full expected key order when IPv6 is present + httpauth supplied.
     expected_keys = [
-        "webdriver",
         "local_webrtc_ipv4",
         "local_webrtc_ipv6",
         "public_webrtc_ipv4",
@@ -609,6 +608,47 @@ def test_write_fpfile_schema(tmp_path):
         "webgl.max_vertex_attribs",
         "webgl.aliased_point_size_max",
         "webgl.max_viewport_dim",
+        "webgl.max_renderbuffer_size",
+        "webgl.max_vertex_texture_image_units",
+        "webgl.max_combined_texture_image_units",
+        "webgl.max_vertex_uniform_vectors",
+        "webgl.max_fragment_uniform_vectors",
+        "webgl.max_varying_vectors",
+        "webgl.aliased_point_size_min",
+        "webgl.aliased_line_width_min",
+        "webgl.aliased_line_width_max",
+        "webgl.max_anisotropy",
+        "webgl.max_3d_texture_size",
+        "webgl.max_array_texture_layers",
+        "webgl.max_samples",
+        "webgl.max_draw_buffers",
+        "webgl.max_color_attachments",
+        "webgl.max_uniform_buffer_bindings",
+        "webgl.uniform_buffer_offset_alignment",
+        "webgl.max_uniform_block_size",
+        "webgl.max_combined_uniform_blocks",
+        "webgl.max_vertex_uniform_blocks",
+        "webgl.max_fragment_uniform_blocks",
+        "webgl.max_vertex_uniform_components",
+        "webgl.max_fragment_uniform_components",
+        "webgl.max_varying_components",
+        "webgl.max_combined_vertex_uniform_components",
+        "webgl.max_combined_fragment_uniform_components",
+        "webgl.supported_extensions",
+        "webgl2.version",
+        "webgl2.glsl_version",
+        "webgl.shader_precision.vertex.low_float",
+        "webgl.shader_precision.vertex.medium_float",
+        "webgl.shader_precision.vertex.high_float",
+        "webgl.shader_precision.vertex.low_int",
+        "webgl.shader_precision.vertex.medium_int",
+        "webgl.shader_precision.vertex.high_int",
+        "webgl.shader_precision.fragment.low_float",
+        "webgl.shader_precision.fragment.medium_float",
+        "webgl.shader_precision.fragment.high_float",
+        "webgl.shader_precision.fragment.low_int",
+        "webgl.shader_precision.fragment.medium_int",
+        "webgl.shader_precision.fragment.high_int",
         "canvas.mode",
         "canvas.seed",
         "canvas.strength",
@@ -626,7 +666,7 @@ def test_write_fpfile_schema(tmp_path):
     )
 
     # --- spot-check representative values ---
-    assert lines[0] == "webdriver:0"
+    assert "webdriver" not in actual_keys
     assert "local_webrtc_ipv4:192.0.2.10" in lines
     assert "local_webrtc_ipv6:2001:db8::10" in lines
     assert "public_webrtc_ipv4:198.51.100.10" in lines
@@ -679,7 +719,6 @@ def test_write_fpfile_default_omits_webrtc_overrides_and_auth(tmp_path):
 
     # Core keys still preserve their deterministic order.
     expected_core_keys = [
-        "webdriver",
         "timezone",
         "language",
         "geolocation.enabled",
@@ -713,6 +752,47 @@ def test_write_fpfile_default_omits_webrtc_overrides_and_auth(tmp_path):
         "webgl.max_vertex_attribs",
         "webgl.aliased_point_size_max",
         "webgl.max_viewport_dim",
+        "webgl.max_renderbuffer_size",
+        "webgl.max_vertex_texture_image_units",
+        "webgl.max_combined_texture_image_units",
+        "webgl.max_vertex_uniform_vectors",
+        "webgl.max_fragment_uniform_vectors",
+        "webgl.max_varying_vectors",
+        "webgl.aliased_point_size_min",
+        "webgl.aliased_line_width_min",
+        "webgl.aliased_line_width_max",
+        "webgl.max_anisotropy",
+        "webgl.max_3d_texture_size",
+        "webgl.max_array_texture_layers",
+        "webgl.max_samples",
+        "webgl.max_draw_buffers",
+        "webgl.max_color_attachments",
+        "webgl.max_uniform_buffer_bindings",
+        "webgl.uniform_buffer_offset_alignment",
+        "webgl.max_uniform_block_size",
+        "webgl.max_combined_uniform_blocks",
+        "webgl.max_vertex_uniform_blocks",
+        "webgl.max_fragment_uniform_blocks",
+        "webgl.max_vertex_uniform_components",
+        "webgl.max_fragment_uniform_components",
+        "webgl.max_varying_components",
+        "webgl.max_combined_vertex_uniform_components",
+        "webgl.max_combined_fragment_uniform_components",
+        "webgl.supported_extensions",
+        "webgl2.version",
+        "webgl2.glsl_version",
+        "webgl.shader_precision.vertex.low_float",
+        "webgl.shader_precision.vertex.medium_float",
+        "webgl.shader_precision.vertex.high_float",
+        "webgl.shader_precision.vertex.low_int",
+        "webgl.shader_precision.vertex.medium_int",
+        "webgl.shader_precision.vertex.high_int",
+        "webgl.shader_precision.fragment.low_float",
+        "webgl.shader_precision.fragment.medium_float",
+        "webgl.shader_precision.fragment.high_float",
+        "webgl.shader_precision.fragment.low_int",
+        "webgl.shader_precision.fragment.medium_int",
+        "webgl.shader_precision.fragment.high_int",
         "canvas.mode",
         "canvas.seed",
         "canvas.strength",
@@ -757,6 +837,7 @@ def test_write_fpfile_rejects_invalid_webrtc_override_family(
     "reserved_key",
     [
         "useragent",
+        "webrtc.ice_proxy_only",
         "canvas",
         "canvas.enabled",
         "canvas.scope",
@@ -973,6 +1054,7 @@ def test_fingerprint_context_helpers():
         "local_ipv6": None,
         "public_ipv4": None,
         "public_ipv6": None,
+        "ice_proxy_only": None,
     }
 
     # apply_emulation: stub page with all four hooks
@@ -1350,6 +1432,7 @@ def test_apply_smart_fingerprint_passes_explicit_webrtc_overrides(tmp_path):
         "local_ipv6": "2001:db8::10",
         "public_ipv4": "198.51.100.10",
         "public_ipv6": "2001:db8::20",
+        "ice_proxy_only": None,
     }
 
 
@@ -1726,3 +1809,306 @@ def test_apply_smart_fingerprint_deprecated_window_flag_does_not_call_opts(tmp_p
     assert ctx.fpfile_path
     assert all(c[0] != "set_window_size" for c in opts.calls)
     assert any("set_window_size_on_opts is deprecated" in line for line in logs)
+
+
+# ---------------------------------------------------------------------------
+# 14) WebRTC ICE proxy policy / extra passthrough / bundled data shape
+# ---------------------------------------------------------------------------
+
+def test_write_fpfile_pins_ice_to_proxy_when_proxy_configured(tmp_path):
+    """Without this key STUN can bypass the proxy and srflx leaks the egress IP."""
+    geo = _make_geo()
+    fp = pick_fingerprint(geo, rng=random.Random(1))
+    out = tmp_path / "fpfile.txt"
+    write_fpfile(
+        str(out), geo, fp,
+        proxy_host="proxy.example.com", proxy_port=8080,
+    )
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    # Leads the file, ahead of the other WebRTC keys.
+    assert lines[0] == "webrtc.ice_proxy_only:true"
+
+
+def test_write_fpfile_omits_ice_proxy_only_for_direct_connections(tmp_path):
+    geo = _make_geo()
+    fp = pick_fingerprint(geo, rng=random.Random(1))
+    out = tmp_path / "fpfile.txt"
+    write_fpfile(str(out), geo, fp)
+
+    keys = [
+        line.split(":", 1)[0]
+        for line in out.read_text(encoding="utf-8").splitlines()
+    ]
+    assert "webrtc.ice_proxy_only" not in keys
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(True, "true"), (False, "false")],
+)
+def test_write_fpfile_honours_explicit_ice_proxy_only(tmp_path, value, expected):
+    geo = _make_geo()
+    fp = pick_fingerprint(geo, rng=random.Random(1))
+    out = tmp_path / "fpfile.txt"
+    write_fpfile(str(out), geo, fp, webrtc_ice_proxy_only=value)
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert "webrtc.ice_proxy_only:{}".format(expected) in lines
+
+
+@pytest.mark.parametrize("value", ["true", 1, 0, "", []])
+def test_write_fpfile_rejects_non_boolean_ice_proxy_only(tmp_path, value):
+    geo = _make_geo()
+    fp = pick_fingerprint(geo, rng=random.Random(1))
+    with pytest.raises(FingerprintError, match="webrtc_ice_proxy_only"):
+        write_fpfile(
+            str(tmp_path / "fp.txt"), geo, fp,
+            webrtc_ice_proxy_only=value,
+        )
+
+
+def test_write_fpfile_extra_accepts_screen_dimensions(tmp_path):
+    """The writer never emits width/height, so callers must be free to supply them."""
+    geo = _make_geo()
+    fp = pick_fingerprint(geo, rng=random.Random(1))
+    out = tmp_path / "fpfile.txt"
+    write_fpfile(
+        str(out), geo, fp,
+        extra={"width": "1920", "height": "1080"},
+    )
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert "width:1920" in lines
+    assert "height:1080" in lines
+
+
+def test_apply_smart_fingerprint_pins_ice_to_proxy(tmp_path):
+    geo = _make_geo()
+    with mock.patch.object(builder, "fetch_geo_info", return_value=geo), \
+            mock.patch.object(builder, "fetch_public_ipv6", return_value=None):
+        ctx = apply_smart_fingerprint(
+            _StubOptions(),
+            proxy_host="proxy.example.com", proxy_port=8080,
+            base_dir=str(tmp_path),
+            require_country=None,
+            fetch_ipv6=False,
+            rng=random.Random(123),
+        )
+
+    lines = open(ctx.fpfile_path, encoding="utf-8").read().splitlines()
+    assert "webrtc.ice_proxy_only:true" in lines
+    assert ctx.webrtc_ice_proxy_only is True
+    assert ctx.to_dict()["webrtc"]["ice_proxy_only"] is True
+
+
+def test_apply_smart_fingerprint_allows_opting_out_of_ice_proxy_only(tmp_path):
+    geo = _make_geo()
+    with mock.patch.object(builder, "fetch_geo_info", return_value=geo), \
+            mock.patch.object(builder, "fetch_public_ipv6", return_value=None):
+        ctx = apply_smart_fingerprint(
+            _StubOptions(),
+            proxy_host="proxy.example.com", proxy_port=8080,
+            base_dir=str(tmp_path),
+            require_country=None,
+            fetch_ipv6=False,
+            webrtc_ice_proxy_only=False,
+            rng=random.Random(123),
+        )
+
+    lines = open(ctx.fpfile_path, encoding="utf-8").read().splitlines()
+    assert "webrtc.ice_proxy_only:false" in lines
+    assert ctx.webrtc_ice_proxy_only is False
+
+
+def test_apply_smart_fingerprint_forwards_extra_keys(tmp_path):
+    """The one-stop API must be able to fill kernel keys the writer skips."""
+    geo = _make_geo()
+    with mock.patch.object(builder, "fetch_geo_info", return_value=geo), \
+            mock.patch.object(builder, "fetch_public_ipv6", return_value=None):
+        ctx = apply_smart_fingerprint(
+            _StubOptions(),
+            base_dir=str(tmp_path),
+            require_country=None,
+            fetch_ipv6=False,
+            extra={
+                "touch.maxTouchPoints": "0",
+                "width": "1920",
+                "height": "1080",
+            },
+            rng=random.Random(123),
+        )
+
+    lines = open(ctx.fpfile_path, encoding="utf-8").read().splitlines()
+    assert "touch.maxTouchPoints:0" in lines
+    assert "width:1920" in lines
+    assert "height:1080" in lines
+
+
+def test_bundled_profiles_use_firefox_shaped_webgl_strings():
+    """Firefox masks VENDOR/RENDERER as ``Mozilla``; Chrome-shaped values leak the spoof."""
+    for profile in list_hardware_profiles():
+        webgl = profile.webgl
+        assert webgl.vendor == "Mozilla", profile.id
+        assert webgl.version == "WebGL 1.0", profile.id
+        assert webgl.glsl_version == "WebGL GLSL ES 1.0", profile.id
+        # Only VENDOR is masked; Firefox hands out the same sanitised ANGLE
+        # string for RENDERER and UNMASKED_RENDERER, suffixed ", or similar".
+        assert webgl.unmasked_vendor != webgl.vendor, profile.id
+        assert webgl.renderer == webgl.unmasked_renderer, profile.id
+        assert webgl.renderer.startswith("ANGLE ("), profile.id
+        assert webgl.renderer.endswith("), or similar"), profile.id
+        assert ", D3D11)" not in webgl.renderer, profile.id
+
+
+def test_bundled_countries_declare_no_remote_speech_voices():
+    """Firefox on Windows exposes SAPI voices only; remote voices are a Chrome tell."""
+    with open(builder.default_region_locales_path(), encoding="utf-8") as f:
+        countries = json.load(f)["countries"]
+
+    for cc, entry in countries.items():
+        speech = entry.get("speech") or {}
+        assert speech.get("remote") == [], cc
+        assert speech.get("remote_langs") == [], cc
+        assert speech.get("default_name") in (speech.get("local") or []), cc
+
+
+# ---------------------------------------------------------------------------
+# 15) profile pinning / country-gate quorum / full WebGL surface
+# ---------------------------------------------------------------------------
+
+def _geojs_payload(country_code, timezone="Asia/Tokyo"):
+    return {
+        "ip": "203.0.113.10",
+        "country_code": country_code,
+        "country": "Somewhere",
+        "region": "R",
+        "city": "C",
+        "timezone": timezone,
+        "latitude": "35.0",
+        "longitude": "139.7",
+    }
+
+
+def _ipapi_payload(country_code, timezone="America/Los_Angeles"):
+    return {
+        "ip": "203.0.113.10",
+        "country": country_code,
+        "country_name": "Somewhere",
+        "region": "R",
+        "city": "C",
+        "timezone": timezone,
+        "latitude": 34.0522,
+        "longitude": -118.2437,
+    }
+
+
+def test_fetch_geo_info_survives_a_single_dissenting_source():
+    """One geo database disagreeing is not proof the proxy moved country."""
+    with mock.patch.object(builder, "_http_get_json", side_effect=[
+        _geojs_payload("JP"),
+        _ipapi_payload("US"),
+    ]):
+        geo = fetch_geo_info(require_country="US", retries_per_source=0)
+
+    assert geo.country_code == "US"
+    assert geo.source == "ipapi"
+
+
+def test_fetch_geo_info_country_mismatch_needs_a_quorum():
+    with mock.patch.object(builder, "_http_get_json", side_effect=[
+        _geojs_payload("JP"),
+        _ipapi_payload("JP", timezone="Asia/Tokyo"),
+    ]):
+        with pytest.raises(CountryMismatchError) as ei:
+            fetch_geo_info(require_country="US", retries_per_source=0)
+
+    assert ei.value.actual == "JP" and ei.value.required == "US"
+
+
+def test_fetch_geo_info_reports_mismatch_when_every_other_source_dies():
+    """A lone mismatch still beats a bare GeoError: we did observe a country."""
+    side_effect = [_geojs_payload("JP")] + [IOError("net down")] * 9
+    with mock.patch.object(builder, "_http_get_json", side_effect=side_effect):
+        with pytest.raises(CountryMismatchError) as ei:
+            fetch_geo_info(require_country="US", retries_per_source=0)
+
+    assert ei.value.actual == "JP"
+
+
+def test_pick_fingerprint_pins_profile_id():
+    geo = _make_geo()
+    for _ in range(5):
+        assert pick_fingerprint(geo, profile_id="win-hd4600").profile_id == "win-hd4600"
+
+
+def test_pick_fingerprint_rejects_unknown_profile_id():
+    with pytest.raises(FingerprintError, match="unknown profile_id"):
+        pick_fingerprint(_make_geo(), profile_id="win-does-not-exist")
+
+
+def test_apply_smart_fingerprint_pins_profile_and_matching_extra(tmp_path):
+    """Pinning is what makes matching width/height in ``extra`` possible."""
+    geo = _make_geo()
+    hardware = next(
+        p for p in list_hardware_profiles() if p.id == "win-arc-a750"
+    )
+    with mock.patch.object(builder, "fetch_geo_info", return_value=geo), \
+            mock.patch.object(builder, "fetch_public_ipv6", return_value=None):
+        ctx = apply_smart_fingerprint(
+            _StubOptions(),
+            base_dir=str(tmp_path),
+            require_country=None,
+            fetch_ipv6=False,
+            profile_id="win-arc-a750",
+            extra={
+                "width": str(hardware.width),
+                "height": str(hardware.height),
+            },
+        )
+
+    assert ctx.fingerprint.profile_id == "win-arc-a750"
+    lines = open(ctx.fpfile_path, encoding="utf-8").read().splitlines()
+    assert "width:{}".format(hardware.width) in lines
+    assert "height:{}".format(hardware.height) in lines
+
+
+def test_bundled_profiles_cover_the_whole_webgl_surface():
+    """A half-configured WebGL is louder than none: every key must be present."""
+    expected = {fp_key for fp_key, _json in builder._WEBGL_EXTRA_FIELDS}
+    expected |= {
+        "webgl.shader_precision." + key
+        for key in builder._WEBGL_PRECISION_KEYS
+    }
+    for profile in list_hardware_profiles():
+        assert {key for key, _value in profile.webgl.params} == expected, profile.id
+
+
+def test_bundled_profiles_use_angle_d3d11_limits():
+    """These are D3D11 constants; values that track the adapter look forged."""
+    for profile in list_hardware_profiles():
+        webgl = profile.webgl
+        params = dict(webgl.params)
+        assert webgl.max_texture_image_units == 16, profile.id
+        assert webgl.max_vertex_attribs == 16, profile.id
+        assert webgl.max_viewport_dim == 32767, profile.id
+        # ANGLE caps renderbuffers and textures together.
+        assert params["webgl.max_renderbuffer_size"] == str(webgl.max_texture_size)
+        assert params["webgl2.version"] == "WebGL 2.0", profile.id
+        assert params["webgl2.glsl_version"] == "WebGL GLSL ES 3.00", profile.id
+        assert "WEBGL_debug_renderer_info" in params["webgl.supported_extensions"]
+
+
+def test_write_fpfile_emits_every_webgl_key(tmp_path):
+    geo = _make_geo()
+    fp = pick_fingerprint(geo, profile_id="win-rtx3060")
+    out = tmp_path / "fpfile.txt"
+    write_fpfile(str(out), geo, fp)
+
+    keys = [
+        line.split(":", 1)[0]
+        for line in out.read_text(encoding="utf-8").splitlines()
+    ]
+    webgl_keys = [k for k in keys if k.startswith("webgl")]
+    assert len(webgl_keys) == len(set(webgl_keys))
+    assert len(webgl_keys) == 12 + len(fp.hardware.webgl.params)

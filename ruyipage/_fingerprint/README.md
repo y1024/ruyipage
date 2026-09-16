@@ -81,12 +81,30 @@ page.get("https://browserleaks.com/webgl")
 - **Geolocation**：经纬度、精度、海拔、海拔精度、航向和速度在 fpfile 与 BiDi
   之间保持一致。数字 `geolocation_timestamp` 使用 Unix epoch 毫秒，并与
   `prompt/denied` 权限状态一样由启动内核管理；BiDi 不会用不完整字段覆盖它。
-- **WebRTC**：自动配置默认省略 `local/public_webrtc_*` 覆盖字段，让 Firefox
-  使用原生 ICE；只有显式传入 `webrtc_local_ipv4/ipv6` 或
-  `webrtc_public_ipv4/ipv6` 时才写入，并严格校验地址族。代理 geo IP 不会被
-  当作 ICE 地址。原生 ICE 仍可能暴露不同于 HTTP 代理出口的直连 srflx 地址；
-  `local_webrtc_*` 只控制匹配 host 地址的字面量暴露，不会合成地址，也不会
-  筛除其他 host candidate。
+- **WebRTC**：配置代理时写入 `webrtc.ice_proxy_only:true`，ICE 只走代理，
+  srflx candidate 随之消失；直连时省略该 key，`webrtc_ice_proxy_only=False`
+  可显式退回原生 ICE。`local/public_webrtc_*` 覆盖字段仍默认省略，只有显式
+  传入 `webrtc_local_ipv4/ipv6` 或 `webrtc_public_ipv4/ipv6` 时才写入，并严格
+  校验地址族；代理 geo IP 不会被当作 ICE 地址。`local_webrtc_*` 只控制匹配
+  host 地址的字面量暴露，不会合成地址，也不会筛除其他 host candidate。
+- **extra 透传**：`apply_smart_fingerprint(..., extra={...})` 把任意内核 key
+  追加到 fpfile 末尾，用于本流水线不覆盖的字段（`touch.maxTouchPoints`、
+  `fonts.whitelist`、`width` / `height`、`screen.devicePixelRatio`、
+  `media.devices`、其余 `webgl.*` / `webgl2.*`、`webgpu.*`）。writer 自己写的
+  key 属于保留字，不可被 `extra` 覆盖。
+- **WebGL 全量覆盖**：53 个字段一次写全（12 个具名 + 41 个 `params`），
+  不留回落缺口。数据分两层：`fingerprints.json` 的 `webgl_common` 存放真机
+  实测的 ANGLE/D3D11 不变量（各项上限、28 项扩展表、12 组 shader 精度），
+  每套 profile 只保留随显卡变化的 `unmasked_vendor` / `unmasked_renderer`。
+  `webgl.vendor` 为 `Mozilla`；`webgl.renderer` 由 `unmasked_renderer` 派生
+  而非独立存储，两者恒等 —— 真实 Firefox 正是如此，形如
+  `ANGLE (...), or similar`。
+- **profile 钉选**：`pick_fingerprint(profile_id=...)` 与
+  `apply_smart_fingerprint(profile_id=...)` 可指定机型。不钉选时 profile 要
+  等调用返回才知道，无法为 `extra` 准备匹配的 `width` / `height`。
+- **国家判定需两票**：`require_country` 不匹配时先记下继续问下一个源，
+  两个源报出同一个错误国家才抛 `CountryMismatchError`（见
+  `COUNTRY_MISMATCH_QUORUM`）。个别源只能报 ASN 注册国，一票不作数。
 - **IPv6 best-effort**：IPv6 出口探测失败时不写入伪造值；显式 WebRTC IPv6 覆盖仍需由调用方提供真实地址。
 - **原子写入**：`tmp + os.replace`，UTF-8 + LF，严格 `key:value` 顺序。
 - **可注入随机源**：所有抽样接 `rng=random.Random(...)`，便于测试复现。

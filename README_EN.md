@@ -2068,13 +2068,17 @@ By default, smart fingerprinting adds an `about:blank` startup page so the BiDi 
 ### Pipeline notes
 
 - Geo lookup uses ten fallback sources. Optional IPv6 lookup enriches diagnostics only; it is never copied into WebRTC policy fields automatically.
+- Kernel keys this pipeline does not populate itself (`touch.maxTouchPoints`, `fonts.whitelist`, `width`/`height`, `screen.devicePixelRatio`, `media.devices`, the remaining `webgl.*` / `webgl2.*`, `webgpu.*`) can be appended through `extra={...}`.
+- All 53 WebGL fields are written at once, leaving no key to fall back to the real adapter. The values come from a real ANGLE/D3D11 dump: `webgl.vendor` is `Mozilla`, while `webgl.renderer` and `webgl.unmasked_renderer` are both `ANGLE (...), or similar` - that suffix is upstream Firefox's real shape, not a placeholder. Limits, extension list and shader precision are ANGLE/D3D11 constants; only `webgl.unmasked_*` varies per model.
+- Pass `profile_id="win-rtx3060"` to pin one of the bundled profiles instead of sampling at random; `list_hardware_profiles()` enumerates the ids. Pinning is what lets you build matching `extra` entries such as `width` / `height`.
+- `require_country` is not decided by a single source: geo databases disagree about the same address, and some can only report where the ASN is registered, so `CountryMismatchError` needs two sources reporting the same wrong country.
 - The generated UA uses the major version reported by `opts.browser_path`; it falls back to the bundled baseline only when the executable cannot be queried, without version jitter.
 - After Firefox starts, `ctx.apply_emulation(page)` sets `screen.width` / `screen.height` / `screen.avail*` through `page.emulation.set_screen_size(hw.width, hw.height)`.
 - For an async page, use `await ctx.apply_emulation_async(async_page)`. This entry point is always awaitable, including when every overlay is disabled.
 - Firefox keeps `outerWidth` / `innerWidth` / viewport geometry natively, and they change with the real window.
 - We do not add production coordinate compensation such as 15/92 or 16/93; 16/93 is only for real-machine verification of the target fingerprint browser.
 - The `apply_emulation()` result includes `screen`, `geolocation`, `locale`, `timezone`, and `headers`.
-- WebRTC remains in Firefox native ICE mode unless real addresses are supplied through `webrtc_local_ipv4/ipv6` or `webrtc_public_ipv4/ipv6`. Native ICE may expose a direct srflx address different from HTTP proxy egress; `local_webrtc_*` controls literal exposure of matching host addresses and does not filter every host candidate.
+- WebRTC: when a proxy is configured the fpfile carries `webrtc.ice_proxy_only:true`, which removes the srflx candidate. Pass `webrtc_ice_proxy_only=False` to fall back to native ICE, where a direct srflx address may differ from the HTTP proxy egress. `local/public_webrtc_*` are still written only when the caller supplies real addresses, and they do not filter every host candidate.
 - Geolocation latitude, longitude, accuracy, altitude, altitude accuracy, heading, and speed are shared across fpfile and BiDi. A numeric `geolocation_timestamp` is Unix epoch milliseconds; timestamps and `prompt`/`denied` permission states stay kernel-managed because BiDi does not represent them.
 
 ### Full fpfile field reference

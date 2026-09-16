@@ -4,6 +4,7 @@
 提供：导航、元素查找、JS 执行、截图、Cookie、弹窗处理等。
 """
 
+import re
 import time
 import base64
 import logging
@@ -17,6 +18,11 @@ from .._bidi import browsing_context as bidi_context
 from .._bidi import script as bidi_script
 from .._functions.bidi_values import parse_value, make_shared_ref
 from .._functions.locator import parse_locator
+
+# ``function foo(...)`` opens a statement; ``function (...)`` and
+# ``async function (...)`` are expressions that can be passed straight
+# through to BiDi as the function declaration.
+_NAMED_FUNCTION_DECL = re.compile(r"^(?:async\s+)?function\s+[A-Za-z_$]")
 from .._functions.settings import Settings
 from .._functions.sleep import sleep as _sleep
 from .._bidi.input_ import build_human_click_actions
@@ -4515,6 +4521,11 @@ class FirefoxBase(BasePage):
 
             # Wrap bare statements that start with 'return ' into a function body
             if script.startswith("return "):
+                func_body = "function(){" + script + "}"
+            elif _NAMED_FUNCTION_DECL.match(script):
+                # A *named* declaration is a statement, so this is a body
+                # that merely opens with a helper - not a standalone
+                # function expression to hand over as-is.
                 func_body = "function(){" + script + "}"
             elif not script.startswith("function") and not script.startswith("("):
                 func_body = "function(){" + script + "}"

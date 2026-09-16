@@ -19,6 +19,9 @@ Provide a single one-stop API ``apply_smart_fingerprint(opts, ...)`` that:
 4. Maps the country code to language / Accept-Language / speech voices.
 5. Writes a ``fpfile.txt`` that strictly follows the firefox-fingerprintBrowser
    field schema (``key:value``) to the chosen userdir, without ``width`` / ``height`` entries.
+   When a proxy is configured the file also pins ICE to that proxy so the
+   srflx candidate cannot leak the real egress IP. Kernel keys the writer
+   does not cover can be supplied through ``extra``.
 6. Configures the supplied ``FirefoxOptions`` instance (proxy / userdir /
    fpfile / script-accessible ``about:blank`` startup page).
    ``set_window_size_on_opts`` is retained as a deprecated no-op;
@@ -124,6 +127,10 @@ from typing import Awaitable, Any, Callable, Dict, List, Mapping, Optional, Tupl
 
 
 DEFAULT_GEOLOCATION_ACCURACY = 15000
+
+# How many independent sources must agree on a non-required country
+# before the egress is declared to be in the wrong place.
+COUNTRY_MISMATCH_QUORUM = 2
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +248,14 @@ class GeolocationProfile:
 
 @dataclass(frozen=True)
 class WebGLProfile:
-    """Full set of WebGL fields aligned 1:1 with the kernel schema."""
+    """Full set of WebGL fields aligned 1:1 with the kernel schema.
+
+    The named fields are the adapter identity plus the handful of limits
+    callers usually inspect. ``params`` carries every remaining
+    ``webgl.*`` / ``webgl2.*`` pair in fpfile emission order, because a
+    partially configured WebGL is more conspicuous than none at all: any
+    key left out falls back to the real adapter.
+    """
 
     vendor: str
     renderer: str
@@ -255,6 +269,7 @@ class WebGLProfile:
     max_vertex_attribs: int
     aliased_point_size_max: int
     max_viewport_dim: int
+    params: Tuple[Tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -369,12 +384,59 @@ _REQUIRED_HW_FIELDS = (
     "id", "platform", "os_token", "font_system",
     "hardwareConcurrency", "width", "height", "webgl",
 )
+# Named ``WebGLProfile`` fields, resolved after ``webgl_common`` is merged
+# into a profile. ``renderer`` is derived, not stored: Firefox hands out
+# the same sanitised ANGLE string for RENDERER and UNMASKED_RENDERER.
 _REQUIRED_WEBGL_FIELDS = (
-    "vendor", "renderer", "version", "glsl_version",
+    "vendor", "version", "glsl_version",
     "unmasked_vendor", "unmasked_renderer",
     "max_texture_size", "max_cube_map_texture_size",
     "max_texture_image_units", "max_vertex_attribs",
     "aliased_point_size_max", "max_viewport_dim",
+)
+
+# Remaining kernel pairs, as ``(fpfile key, JSON key)`` in emission order.
+_WEBGL_EXTRA_FIELDS: Tuple[Tuple[str, str], ...] = tuple(
+    ("webgl." + name, name) for name in (
+        "max_renderbuffer_size",
+        "max_vertex_texture_image_units",
+        "max_combined_texture_image_units",
+        "max_vertex_uniform_vectors",
+        "max_fragment_uniform_vectors",
+        "max_varying_vectors",
+        "aliased_point_size_min",
+        "aliased_line_width_min",
+        "aliased_line_width_max",
+        "max_anisotropy",
+        "max_3d_texture_size",
+        "max_array_texture_layers",
+        "max_samples",
+        "max_draw_buffers",
+        "max_color_attachments",
+        "max_uniform_buffer_bindings",
+        "uniform_buffer_offset_alignment",
+        "max_uniform_block_size",
+        "max_combined_uniform_blocks",
+        "max_vertex_uniform_blocks",
+        "max_fragment_uniform_blocks",
+        "max_vertex_uniform_components",
+        "max_fragment_uniform_components",
+        "max_varying_components",
+        "max_combined_vertex_uniform_components",
+        "max_combined_fragment_uniform_components",
+        "supported_extensions",
+    )
+) + (
+    ("webgl2.version", "webgl2_version"),
+    ("webgl2.glsl_version", "webgl2_glsl_version"),
+)
+
+# ``rangeMin,rangeMax,precision`` triples, 12 per adapter.
+_WEBGL_PRECISION_KEYS: Tuple[str, ...] = tuple(
+    "{}.{}".format(stage, kind)
+    for stage in ("vertex", "fragment")
+    for kind in ("low_float", "medium_float", "high_float",
+                 "low_int", "medium_int", "high_int")
 )
 
 
@@ -405,6 +467,12 @@ def _load_fingerprints(path: str) -> Dict[str, Any]:
     if not isinstance(profiles, list) or not profiles:
         raise FingerprintConfigError(
             "fingerprints.json: hardware_profiles must be a non-empty list"
+        )
+
+    common = data.get("webgl_common") or {}
+    if not isinstance(common, dict):
+        raise FingerprintConfigError(
+            "fingerprints.json: webgl_common must be an object"
         )
 
     seen_ids: set = set()
@@ -442,12 +510,36 @@ def _load_fingerprints(path: str) -> Dict[str, Any]:
             raise FingerprintConfigError(
                 "fingerprints.json: profile %r webgl must be an object" % p["id"]
             )
+        merged = dict(common)
+        merged.update(webgl)
+        # RENDERER is not stored: keeping it derived makes it impossible to
+        # ship a profile whose masked and unmasked strings disagree.
+        merged["renderer"] = merged.get("unmasked_renderer")
         for k in _REQUIRED_WEBGL_FIELDS:
-            if k not in webgl:
+            if merged.get(k) in (None, ""):
                 raise FingerprintConfigError(
                     "fingerprints.json: profile %r webgl missing field %r"
                     % (p["id"], k)
                 )
+        for _fp_key, json_key in _WEBGL_EXTRA_FIELDS:
+            if merged.get(json_key) in (None, ""):
+                raise FingerprintConfigError(
+                    "fingerprints.json: profile %r webgl missing field %r"
+                    % (p["id"], json_key)
+                )
+        precision = merged.get("shader_precision")
+        if not isinstance(precision, dict):
+            raise FingerprintConfigError(
+                "fingerprints.json: profile %r webgl missing shader_precision"
+                % p["id"]
+            )
+        for k in _WEBGL_PRECISION_KEYS:
+            if not str(precision.get(k) or "").strip():
+                raise FingerprintConfigError(
+                    "fingerprints.json: profile %r shader_precision missing %r"
+                    % (p["id"], k)
+                )
+        p["webgl"] = merged
 
     return data
 
@@ -558,6 +650,20 @@ def _load_iana_timezones(path: str) -> frozenset:
 # Helper builders
 # ---------------------------------------------------------------------------
 
+def _webgl_params_from_dict(w: Mapping[str, Any]) -> Tuple[Tuple[str, str], ...]:
+    """Flatten the non-named WebGL entries into ordered fpfile pairs."""
+    precision = w.get("shader_precision") or {}
+    pairs: List[Tuple[str, str]] = [
+        (fp_key, str(w[json_key]))
+        for fp_key, json_key in _WEBGL_EXTRA_FIELDS
+    ]
+    pairs.extend(
+        ("webgl.shader_precision." + key, str(precision[key]))
+        for key in _WEBGL_PRECISION_KEYS
+    )
+    return tuple(pairs)
+
+
 def _hardware_from_dict(d: Dict[str, Any]) -> HardwareProfile:
     """Convert a JSON profile dict into a typed :class:`HardwareProfile`."""
     w = d["webgl"]
@@ -582,6 +688,7 @@ def _hardware_from_dict(d: Dict[str, Any]) -> HardwareProfile:
             max_vertex_attribs=int(w["max_vertex_attribs"]),
             aliased_point_size_max=int(w["aliased_point_size_max"]),
             max_viewport_dim=int(w["max_viewport_dim"]),
+            params=_webgl_params_from_dict(w),
         ),
     )
 
@@ -1018,6 +1125,7 @@ def fetch_geo_info(
     log = logger or (lambda _msg: None)
     require_country = (require_country or "").strip().upper() or None
     errors: List[str] = []
+    mismatches: List[Tuple[str, str]] = []
 
     for tag, url, parser_key in _GEO_SOURCES:
         attempts = retries_per_source + 1
@@ -1027,18 +1135,7 @@ def fetch_geo_info(
                 payload = _http_get_json(url, proxies, timeout)
                 geo = _PARSERS[parser_key](payload)
                 _validate_geo(geo)
-                if require_country and geo.country_code != require_country:
-                    raise CountryMismatchError(
-                        actual=geo.country_code,
-                        required=require_country,
-                    )
-                log("[fp] geo ok ip={} cc={} tz={} src={}".format(
-                    geo.ip, geo.country_code, geo.timezone, tag))
-                return geo
             except FingerprintConfigError:
-                raise
-            except CountryMismatchError:
-                # CC mismatch is final - other sources observe the same IP.
                 raise
             except Exception as e:  # noqa: BLE001
                 errors.append("{} attempt={} -> {}".format(
@@ -1046,6 +1143,37 @@ def fetch_geo_info(
                 if attempt + 1 < attempts:
                     time.sleep(0.5)
                 continue
+
+            if require_country and geo.country_code != require_country:
+                # Every source observes the same egress IP, but they do
+                # not share a geo database, and some can only report
+                # where the ASN is registered. One dissenting source is
+                # not proof that the proxy is in the wrong country, so
+                # keep looking; sources that agree with each other are.
+                mismatches.append((tag, geo.country_code))
+                log("[fp] geo cc mismatch src={} cc={} required={}".format(
+                    tag, geo.country_code, require_country))
+                seen = [cc for _tag, cc in mismatches]
+                if seen.count(geo.country_code) >= COUNTRY_MISMATCH_QUORUM:
+                    raise CountryMismatchError(
+                        actual=geo.country_code,
+                        required=require_country,
+                    )
+                # Retrying this source would return the same country.
+                break
+
+            log("[fp] geo ok ip={} cc={} tz={} src={}".format(
+                geo.ip, geo.country_code, geo.timezone, tag))
+            return geo
+
+    if mismatches:
+        tally: Dict[str, int] = {}
+        for _tag, cc in mismatches:
+            tally[cc] = tally.get(cc, 0) + 1
+        actual = max(tally, key=lambda cc: tally[cc])
+        raise CountryMismatchError(
+            actual=actual, required=cast(str, require_country)
+        )
 
     raise GeoError("all geo sources failed: " + " | ".join(errors))
 
@@ -1195,6 +1323,7 @@ def pick_fingerprint(
     geo: GeoInfo,
     *,
     firefox_version: Optional[int] = None,
+    profile_id: Optional[str] = None,
     fingerprints_path: Optional[str] = None,
     region_locales_path: Optional[str] = None,
     rng: Optional[random.Random] = None,
@@ -1217,6 +1346,12 @@ def pick_fingerprint(
         Output of :func:`fetch_geo_info`.
     firefox_version : int, optional
         Exact Firefox major version reported by the running browser.
+    profile_id : str, optional
+        Pin a specific hardware profile instead of sampling one. Use
+        :func:`list_hardware_profiles` to enumerate the available ids.
+        Pinning is what lets a caller build matching ``extra`` entries
+        (``width`` / ``height`` and friends) up front, and what lets an
+        account keep one identity across sessions.
     fingerprints_path / region_locales_path : str, optional
         Override the bundled JSON files (e.g. for tests).
     rng : random.Random, optional
@@ -1232,13 +1367,26 @@ def pick_fingerprint(
     FingerprintConfigError
         Underlying JSON files are missing or invalid.
     FingerprintError
-        ``firefox_version`` is not a positive integer.
+        ``firefox_version`` is not a positive integer, or
+        ``profile_id`` does not name a bundled profile.
     """
     rnd = rng or random
     fp_data = _load_fingerprints(
         fingerprints_path or default_fingerprints_path()
     )
-    hw_dict = rnd.choice(fp_data["hardware_profiles"])
+    pool = fp_data["hardware_profiles"]
+    if profile_id is None:
+        hw_dict = rnd.choice(pool)
+    else:
+        hw_dict = next(
+            (p for p in pool if p["id"] == profile_id), None
+        )
+        if hw_dict is None:
+            raise FingerprintError(
+                "unknown profile_id {!r}; available ids: {}".format(
+                    profile_id, ", ".join(p["id"] for p in pool)
+                )
+            )
     hw = _hardware_from_dict(hw_dict)
 
     country = get_country_profile(geo.country_code, region_locales_path)
@@ -1271,7 +1419,7 @@ def pick_fingerprint(
 # Reserved keys that the writer always populates from (geo, fp); user
 # supplied ``extra`` keys cannot collide with these.
 _RESERVED_KEYS: Tuple[str, ...] = (
-    "webdriver",
+    "webrtc.ice_proxy_only",
     "local_webrtc_ipv4", "local_webrtc_ipv6",
     "public_webrtc_ipv4", "public_webrtc_ipv6",
     "timezone", "language",
@@ -1284,7 +1432,9 @@ _RESERVED_KEYS: Tuple[str, ...] = (
     "webgl.max_texture_size", "webgl.max_cube_map_texture_size",
     "webgl.max_texture_image_units", "webgl.max_vertex_attribs",
     "webgl.aliased_point_size_max", "webgl.max_viewport_dim",
-    "width", "height",
+) + tuple(fp_key for fp_key, _json in _WEBGL_EXTRA_FIELDS) + tuple(
+    "webgl.shader_precision." + key for key in _WEBGL_PRECISION_KEYS
+) + (
     "canvas", "canvas.enabled", "canvas.scope",
     "canvas.mode", "canvas.seed", "canvas.strength",
     "canvas.preserveAlpha", "canvas.preserveWhitePoint",
@@ -1510,6 +1660,27 @@ def _validate_webrtc_ip(
     return str(address)
 
 
+def _resolve_ice_proxy_only(
+    value: Optional[bool],
+    proxy_host: Optional[str],
+    proxy_port: Optional[int],
+) -> Optional[bool]:
+    """Resolve the ``webrtc.ice_proxy_only`` policy.
+
+    ``None`` means auto: force ICE through the proxy whenever one is
+    configured, and omit the key entirely for direct connections so the
+    kernel keeps native ICE. Without it STUN can bypass the proxy and the
+    srflx candidate leaks the real egress IP.
+    """
+    if value is None:
+        return True if (proxy_host and proxy_port) else None
+    if not isinstance(value, bool):
+        raise FingerprintError(
+            "webrtc_ice_proxy_only must be a boolean or None"
+        )
+    return value
+
+
 def write_fpfile(
     fpfile_path: str,
     geo: GeoInfo,
@@ -1524,6 +1695,7 @@ def write_fpfile(
     webrtc_local_ipv6: Optional[str] = None,
     webrtc_public_ipv4: Optional[str] = None,
     webrtc_public_ipv6: Optional[str] = None,
+    webrtc_ice_proxy_only: Optional[bool] = None,
     geolocation_enabled: bool = True,
     geolocation_latitude: Optional[float] = None,
     geolocation_longitude: Optional[float] = None,
@@ -1561,6 +1733,11 @@ def write_fpfile(
         Exact server-reflexive or peer-reflexive ICE addresses accepted by
         the Firefox WebRTC policy. Omitted by default because HTTP/SOCKS geo
         lookup does not prove the address used by STUN.
+    webrtc_ice_proxy_only : bool, optional
+        ICE-over-proxy policy. ``None`` (default) means auto: written as
+        ``true`` whenever ``proxy_host`` and ``proxy_port`` are supplied,
+        and omitted entirely for direct connections. Without it STUN can
+        bypass the proxy and the srflx candidate exposes the real egress IP.
     geolocation_* : optional
         Complete kernel geolocation profile. Latitude and longitude default
         to the proxy-derived ``GeoInfo`` coordinates.
@@ -1604,6 +1781,9 @@ def write_fpfile(
         timestamp=geolocation_timestamp,
         permission=geolocation_permission,
     )
+    ice_proxy_only = _resolve_ice_proxy_only(
+        webrtc_ice_proxy_only, proxy_host, proxy_port
+    )
 
     extra_items: List[Tuple[str, str]] = []
     if extra:
@@ -1629,8 +1809,10 @@ def write_fpfile(
     lines: List[str] = []
     a = lines.append
 
-    a("webdriver:0")
-
+    # No ``webdriver`` line: navigator.webdriver is hard-wired to false in
+    # the kernel and the key is never read, so writing it is a no-op.
+    if ice_proxy_only is not None:
+        a("webrtc.ice_proxy_only:" + ("true" if ice_proxy_only else "false"))
     if webrtc_local_ipv4:
         a("local_webrtc_ipv4:" + webrtc_local_ipv4)
     if webrtc_local_ipv6:
@@ -1680,6 +1862,8 @@ def write_fpfile(
     a("webgl.max_vertex_attribs:" + str(w.max_vertex_attribs))
     a("webgl.aliased_point_size_max:" + str(w.aliased_point_size_max))
     a("webgl.max_viewport_dim:" + str(w.max_viewport_dim))
+    for param_key, param_value in w.params:
+        a("{}:{}".format(param_key, param_value))
 
     a("canvas.mode:pixel")
     a("canvas.seed:" + str(canvas_seed))
@@ -1748,6 +1932,9 @@ class FingerprintContext:
     webrtc_local_ipv4 / webrtc_local_ipv6 / webrtc_public_ipv4 /
     webrtc_public_ipv6
         Validated explicit ICE overrides, or ``None`` for native ICE.
+    webrtc_ice_proxy_only
+        Effective ICE-over-proxy policy as written to the fpfile, or
+        ``None`` when the key was omitted (direct connection).
     """
 
     geo: GeoInfo
@@ -1765,6 +1952,7 @@ class FingerprintContext:
     webrtc_local_ipv6: Optional[str] = None
     webrtc_public_ipv4: Optional[str] = None
     webrtc_public_ipv6: Optional[str] = None
+    webrtc_ice_proxy_only: Optional[bool] = None
 
     # ---- inspection ----
 
@@ -1820,6 +2008,7 @@ class FingerprintContext:
                 "local_ipv6": self.webrtc_local_ipv6,
                 "public_ipv4": self.webrtc_public_ipv4,
                 "public_ipv6": self.webrtc_public_ipv6,
+                "ice_proxy_only": self.webrtc_ice_proxy_only,
             },
         }
 
@@ -2062,10 +2251,12 @@ def apply_smart_fingerprint(
     base_dir: Optional[str] = None,
     fpfile_name: str = "fpfile.txt",
     firefox_version: Optional[int] = None,
+    profile_id: Optional[str] = None,
     webrtc_local_ipv4: Optional[str] = None,
     webrtc_local_ipv6: Optional[str] = None,
     webrtc_public_ipv4: Optional[str] = None,
     webrtc_public_ipv6: Optional[str] = None,
+    webrtc_ice_proxy_only: Optional[bool] = None,
     geolocation_enabled: bool = True,
     geolocation_latitude: Optional[float] = None,
     geolocation_longitude: Optional[float] = None,
@@ -2089,6 +2280,7 @@ def apply_smart_fingerprint(
     set_fpfile_on_opts: bool = True,
     set_startup_page_on_opts: bool = True,
     set_window_size_on_opts: bool = False,
+    extra: Optional[Dict[str, str]] = None,
     logger: Optional[Callable[[str], None]] = None,
 ) -> FingerprintContext:
     """One-stop smart fingerprint configuration.
@@ -2126,10 +2318,20 @@ def apply_smart_fingerprint(
         Exact Firefox major version for the generated UA. When omitted, the
         value is read from ``opts.browser_path`` and falls back to the bundled
         fingerprint data only when the executable cannot be queried.
+    profile_id : str, optional
+        Pin one of the bundled hardware profiles instead of sampling at
+        random. Required if you want to pass matching ``extra`` entries
+        such as ``width`` / ``height``, since otherwise the profile is
+        not known until after the call returns.
     webrtc_local_ipv4 / webrtc_local_ipv6 / webrtc_public_ipv4 /
     webrtc_public_ipv6 : str, optional
         Explicit ICE addresses for the Firefox WebRTC policy. If omitted,
-        the generated fpfile leaves WebRTC policy in native mode.
+        the generated fpfile leaves the ICE addresses in native mode.
+    webrtc_ice_proxy_only : bool, optional
+        Force ICE through the proxy. ``None`` (default) enables it
+        automatically whenever a proxy is configured; pass ``False`` to
+        keep native ICE even behind a proxy, at the cost of a srflx
+        candidate that reveals the real egress IP.
     geolocation_* : optional
         Coordinated kernel/BiDi geolocation profile. Coordinates default to
         the proxy-derived ``GeoInfo`` and accuracy defaults to 15000 metres.
@@ -2165,6 +2367,13 @@ def apply_smart_fingerprint(
         are never mapped to the Firefox outer window. Call
         ``opts.set_window_size()`` yourself when an explicit outer window is
         required.
+    extra : dict, optional
+        Additional ``key: value`` fpfile lines appended after the core
+        fields, for kernel keys this pipeline does not populate itself
+        (``width`` / ``height``, ``touch.maxTouchPoints``,
+        ``fonts.whitelist``, ``screen.devicePixelRatio``, ``media.devices``,
+        the remaining ``webgl.*`` / ``webgl2.*`` parameters, ``webgpu.*``).
+        Reserved keys cannot be overridden - see ``_RESERVED_KEYS``.
     logger : callable, optional
         Receives ``[fp] ...`` status messages.
 
@@ -2237,6 +2446,7 @@ def apply_smart_fingerprint(
     fp = pick_fingerprint(
         geo,
         firefox_version=resolved_firefox_version,
+        profile_id=profile_id,
         fingerprints_path=fingerprints_path,
         region_locales_path=region_locales_path,
         rng=rng,
@@ -2268,6 +2478,11 @@ def apply_smart_fingerprint(
     webrtc_public_ipv6 = _validate_webrtc_ip(
         "webrtc_public_ipv6", webrtc_public_ipv6, 6
     )
+    ice_proxy_only = _resolve_ice_proxy_only(
+        webrtc_ice_proxy_only, proxy_host, proxy_port
+    )
+    if ice_proxy_only:
+        log("[fp] webrtc.ice_proxy_only=true (ICE forced through proxy)")
 
     # 6) write fpfile
     fpfile_path = os.path.join(userdir_abs, fpfile_name)
@@ -2284,6 +2499,7 @@ def apply_smart_fingerprint(
         webrtc_local_ipv6=webrtc_local_ipv6,
         webrtc_public_ipv4=webrtc_public_ipv4,
         webrtc_public_ipv6=webrtc_public_ipv6,
+        webrtc_ice_proxy_only=ice_proxy_only,
         geolocation_enabled=geolocation.enabled,
         geolocation_latitude=geolocation.latitude,
         geolocation_longitude=geolocation.longitude,
@@ -2294,6 +2510,7 @@ def apply_smart_fingerprint(
         geolocation_speed=geolocation.speed,
         geolocation_timestamp=geolocation.timestamp,
         geolocation_permission=geolocation.permission,
+        extra=extra,
     )
     log("[fp] fpfile " + fpfile_path)
 
@@ -2348,4 +2565,5 @@ def apply_smart_fingerprint(
         webrtc_local_ipv6=webrtc_local_ipv6,
         webrtc_public_ipv4=webrtc_public_ipv4,
         webrtc_public_ipv6=webrtc_public_ipv6,
+        webrtc_ice_proxy_only=ice_proxy_only,
     )
